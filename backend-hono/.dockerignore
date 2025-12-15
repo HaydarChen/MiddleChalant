@@ -1,0 +1,7 @@
+node_modules
+npm-debug.log
+.env
+.drizzle
+.drizzle-kit
+.drizzle/*
+dist

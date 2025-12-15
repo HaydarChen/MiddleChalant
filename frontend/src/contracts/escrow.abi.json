@@ -1,0 +1,107 @@
+[
+  {
+    "type": "function",
+    "stateMutability": "view",
+    "name": "buyer",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "address" }]
+  },
+  {
+    "type": "function",
+    "stateMutability": "view",
+    "name": "seller",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "address" }]
+  },
+  {
+    "type": "function",
+    "stateMutability": "view",
+    "name": "token",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "address" }]
+  },
+  {
+    "type": "function",
+    "stateMutability": "view",
+    "name": "amount",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "stateMutability": "view",
+    "name": "feeBps",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "stateMutability": "view",
+    "name": "state",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint8" }]
+  },
+  {
+    "type": "function",
+    "stateMutability": "nonpayable",
+    "name": "deposit",
+    "inputs": [],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "stateMutability": "nonpayable",
+    "name": "release",
+    "inputs": [],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "stateMutability": "nonpayable",
+    "name": "refund",
+    "inputs": [],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "stateMutability": "nonpayable",
+    "name": "cancel",
+    "inputs": [],
+    "outputs": []
+  },
+  {
+    "type": "event",
+    "name": "Deposited",
+    "inputs": [
+      { "indexed": true, "name": "from", "type": "address" },
+      { "indexed": false, "name": "amount", "type": "uint256" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Released",
+    "inputs": [
+      { "indexed": true, "name": "to", "type": "address" },
+      { "indexed": false, "name": "amount", "type": "uint256" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Refunded",
+    "inputs": [
+      { "indexed": true, "name": "to", "type": "address" },
+      { "indexed": false, "name": "amount", "type": "uint256" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Cancelled",
+    "inputs": [
+      { "indexed": true, "name": "by", "type": "address" }
+    ],
+    "anonymous": false
+  }
+]
