@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import { apiReference } from "@scalar/hono-api-reference";
 import { auth } from "@/lib/auth";
+import { openApiDoc } from "@/lib/openapi";
 import { roomController, messageController, escrowController } from "@/controllers";
 import { requireAuth } from "@/middlewares";
 
@@ -31,6 +33,20 @@ export const apiRouter = new Hono();
 
 // Health check
 apiRouter.get("/health", (c) => c.json({ ok: true, timestamp: new Date().toISOString() }));
+
+// ============ API Documentation ============
+
+// OpenAPI JSON spec
+apiRouter.get("/openapi.json", (c) => c.json(openApiDoc));
+
+// Scalar API Reference UI
+apiRouter.get(
+  "/docs",
+  apiReference({
+    url: "/api/openapi.json",
+    theme: "kepler",
+  })
+);
 
 // ============ Auth Routes (BetterAuth native) ============
 
