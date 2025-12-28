@@ -36,17 +36,17 @@ apiRouter.get("/health", (c) => c.json({ ok: true, timestamp: new Date().toISOSt
 
 apiRouter.on(["POST", "GET"], "/auth/*", (c) => auth.handler(c.req.raw));
 
-// ============ Room Routes ============
+// ============ Room Routes (all require auth) ============
 
-apiRouter.get("/rooms", roomController.getAll);
-apiRouter.post("/rooms", zValidator("json", createRoomSchema), roomController.create);
-apiRouter.get("/rooms/:roomId", roomController.getById);
-apiRouter.post("/rooms/:roomId/join", zValidator("json", joinRoomSchema), roomController.join);
-apiRouter.get("/rooms/:roomId/participants", roomController.getParticipants);
+apiRouter.get("/rooms", requireAuth, roomController.getAll);
+apiRouter.post("/rooms", requireAuth, zValidator("json", createRoomSchema), roomController.create);
+apiRouter.get("/rooms/:roomId", requireAuth, roomController.getById);
+apiRouter.post("/rooms/:roomId/join", requireAuth, zValidator("json", joinRoomSchema), roomController.join);
+apiRouter.get("/rooms/:roomId/participants", requireAuth, roomController.getParticipants);
 
-// ============ Message Routes ============
+// ============ Message Routes (all require auth) ============
 
-apiRouter.get("/rooms/:roomId/messages", messageController.getByRoomId);
+apiRouter.get("/rooms/:roomId/messages", requireAuth, messageController.getByRoomId);
 apiRouter.post(
   "/rooms/:roomId/messages",
   requireAuth,
