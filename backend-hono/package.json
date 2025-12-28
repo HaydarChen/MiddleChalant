@@ -9,6 +9,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
     "lint": "eslint ."
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "@tanstack/query-core": "^5.90.12",
     "@types/ws": "^8.5.10",
     "better-auth": "^1.4.9",
+    "dotenv": "^17.2.3",
     "drizzle-orm": "^0.45.1",
     "hono": "^4.5.7",
     "hono-openapi": "^1.1.2",
