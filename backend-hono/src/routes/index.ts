@@ -105,6 +105,14 @@ apiRouter.post("/rooms/:roomId/actions/confirm-fee", requireAuth, botController.
 apiRouter.post("/rooms/:roomId/actions/check-deposit", requireAuth, botController.checkDeposit);
 apiRouter.post("/rooms/:roomId/actions/mock-deposit", requireAuth, botController.mockDeposit);
 
+// Release Flow Routes
+apiRouter.post("/rooms/:roomId/actions/initiate-release", requireAuth, botController.initiateRelease);
+apiRouter.post("/rooms/:roomId/actions/confirm-release", requireAuth, botController.confirmRelease);
+apiRouter.post("/rooms/:roomId/actions/cancel-release", requireAuth, botController.cancelRelease);
+apiRouter.post("/rooms/:roomId/actions/submit-payout-address", requireAuth, zValidator("json", z.object({ address: z.string().min(1) })), botController.submitPayoutAddress);
+apiRouter.post("/rooms/:roomId/actions/confirm-payout-address", requireAuth, botController.confirmPayoutAddress);
+apiRouter.post("/rooms/:roomId/actions/change-payout-address", requireAuth, botController.changePayoutAddress);
+
 // ============ Escrow Routes ============
 
 apiRouter.get("/escrows/by-address", escrowController.getByAddress);

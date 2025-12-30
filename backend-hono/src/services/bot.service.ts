@@ -845,4 +845,247 @@ export const botService = {
         : null,
     };
   },
+
+  // ============ Release Flow ============
+
+  /**
+   * Initiate release (sender only)
+   */
+  async onReleaseInitiated(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (room.step !== ROOM_STEPS.FUNDED) {
+      return { ok: false, error: "Room is not in funded state" };
+    }
+
+    // Only sender can initiate release
+    if (participant.role !== ROLES.SENDER) {
+      return { ok: false, error: "Only the sender can initiate release" };
+    }
+
+    // Mark sender as confirmed for release
+    await participantRepository.update(participant.id, { releaseConfirmed: true });
+
+    // Transition to RELEASING state
+    await roomService.updateRoomStep(room.id, ROOM_STEPS.RELEASING);
+
+    const senderName = await getUserName(userId);
+    const msg = BOT_MESSAGES.RELEASE_REQUESTED(senderName);
+    await this.sendBotMessage(room.id, msg.text, msg.metadata);
+
+    return { ok: true };
+  },
+
+  /**
+   * Confirm release (receiver confirms sender's release request)
+   */
+  async onReleaseConfirmed(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (room.step !== ROOM_STEPS.RELEASING) {
+      return { ok: false, error: "Room is not in releasing state" };
+    }
+
+    // Mark participant as confirmed
+    await participantRepository.update(participant.id, { releaseConfirmed: true });
+
+    const userName = await getUserName(userId);
+
+    // Check if both confirmed
+    const participants = await roomService.getRoomParticipants(room.id);
+    const allConfirmed = participants.every((p) => p.releaseConfirmed);
+
+    if (allConfirmed) {
+      // Both confirmed - ask receiver for payout address
+      const receiver = participants.find((p) => p.role === ROLES.RECEIVER)!;
+      const receiverName = await getUserName(receiver.userId);
+
+      const addressMsg = BOT_MESSAGES.REQUEST_PAYOUT_ADDRESS(receiverName);
+      await this.sendBotMessage(room.id, addressMsg.text, addressMsg.metadata);
+    } else {
+      // Just send confirmation message
+      const confirmMsg = BOT_MESSAGES.FEE_CONFIRMED_BY(userName); // Reusing this message
+      await this.sendBotMessage(room.id, `**${userName}** confirmed the release.`);
+    }
+
+    return { ok: true };
+  },
+
+  /**
+   * Cancel release request (go back to FUNDED)
+   */
+  async onReleaseCancelled(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (room.step !== ROOM_STEPS.RELEASING) {
+      return { ok: false, error: "Room is not in releasing state" };
+    }
+
+    // Reset release confirmations
+    const participants = await roomService.getRoomParticipants(room.id);
+    for (const p of participants) {
+      await participantRepository.update(p.id, { releaseConfirmed: false });
+    }
+
+    // Go back to FUNDED state
+    await roomService.updateRoomStep(room.id, ROOM_STEPS.FUNDED);
+
+    const userName = await getUserName(userId);
+    await this.sendBotMessage(
+      room.id,
+      `**${userName}** cancelled the release request. The funds remain in escrow.`
+    );
+
+    // Re-show the release/cancel buttons
+    const depositAmount = room.amount ? formatUsdtAmount(room.amount) : "0";
+    const msg = BOT_MESSAGES.DEPOSIT_RECEIVED(depositAmount, room.depositTxHash || "");
+    await this.sendBotMessage(room.id, "You can still release or cancel the deal:", msg.metadata);
+
+    return { ok: true };
+  },
+
+  /**
+   * Submit payout address (receiver only)
+   */
+  async onPayoutAddressSubmitted(
+    room: Room,
+    userId: string,
+    address: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (room.step !== ROOM_STEPS.RELEASING) {
+      return { ok: false, error: "Room is not in releasing state" };
+    }
+
+    // Only receiver can submit payout address
+    if (participant.role !== ROLES.RECEIVER) {
+      return { ok: false, error: "Only the receiver can provide payout address" };
+    }
+
+    // Validate address format
+    if (!blockchainService.isValidAddress(address)) {
+      return { ok: false, error: "Invalid wallet address format" };
+    }
+
+    // Store the address temporarily
+    await participantRepository.update(participant.id, { payoutAddress: address });
+
+    // Ask for confirmation
+    const confirmMsg = BOT_MESSAGES.CONFIRM_PAYOUT_ADDRESS(address);
+    await this.sendBotMessage(room.id, confirmMsg.text, confirmMsg.metadata);
+
+    return { ok: true };
+  },
+
+  /**
+   * Confirm payout address and execute release
+   */
+  async onPayoutAddressConfirmed(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (room.step !== ROOM_STEPS.RELEASING) {
+      return { ok: false, error: "Room is not in releasing state" };
+    }
+
+    if (participant.role !== ROLES.RECEIVER) {
+      return { ok: false, error: "Only the receiver can confirm payout address" };
+    }
+
+    if (!participant.payoutAddress) {
+      return { ok: false, error: "No payout address set" };
+    }
+
+    if (!room.escrowAddress || !room.amount || !room.feePayer) {
+      return { ok: false, error: "Room not properly configured" };
+    }
+
+    // Calculate receiver amount
+    const fee = calculateFee(room.amount);
+    const receiverAmount = calculateReceiverAmount(room.amount, fee, room.feePayer as FeePayer);
+
+    // Execute the release
+    const result = await blockchainService.executeRelease(
+      room.escrowAddress,
+      participant.payoutAddress,
+      receiverAmount,
+      room.chainId
+    );
+
+    if (!result.success) {
+      return { ok: false, error: result.error || "Failed to execute release" };
+    }
+
+    // Store release tx hash
+    await roomService.setReleaseTxHash(room.id, result.txHash!);
+
+    // Update room status
+    await roomService.updateRoomStep(room.id, ROOM_STEPS.COMPLETED);
+    await roomService.updateRoomStatus(room.id, ROOM_STATUSES.COMPLETED);
+
+    // Send success messages
+    const receiverName = await getUserName(userId);
+    const releaseMsg = BOT_MESSAGES.PAYMENT_RELEASED(
+      receiverName,
+      formatUsdtAmount(receiverAmount),
+      result.txHash!
+    );
+    await this.sendBotMessage(room.id, releaseMsg.text, releaseMsg.metadata);
+
+    const completeMsg = BOT_MESSAGES.DEAL_COMPLETED();
+    await this.sendBotMessage(room.id, completeMsg.text, completeMsg.metadata);
+
+    // TODO: Create transaction record for public history (Feature 12)
+
+    return { ok: true };
+  },
+
+  /**
+   * Change payout address (go back to address input)
+   */
+  async onPayoutAddressRejected(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (participant.role !== ROLES.RECEIVER) {
+      return { ok: false, error: "Only the receiver can change payout address" };
+    }
+
+    // Clear the address
+    await participantRepository.update(participant.id, { payoutAddress: null });
+
+    // Ask for address again
+    const receiverName = await getUserName(userId);
+    const addressMsg = BOT_MESSAGES.REQUEST_PAYOUT_ADDRESS(receiverName);
+    await this.sendBotMessage(room.id, addressMsg.text, addressMsg.metadata);
+
+    return { ok: true };
+  },
 };

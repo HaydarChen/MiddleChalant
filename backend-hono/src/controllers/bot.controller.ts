@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { botService, roomService } from "@/services";
 import { NotFoundError, BadRequestError } from "@/middlewares";
 import { getUser } from "@/middlewares/auth.middleware";
-import type { SelectRoleRequest, ProposeAmountRequest, ConfirmAmountRequest, SelectFeePayerRequest } from "@/types";
+import type { SelectRoleRequest, ProposeAmountRequest, ConfirmAmountRequest, SelectFeePayerRequest, SetPayoutAddressRequest } from "@/types";
 import { ROLES, FEE_PAYERS, type Role, type FeePayer } from "@/types";
 
 export const botController = {
@@ -252,5 +252,156 @@ export const botController = {
       txHash: result.txHash,
       message: "Mock deposit created and processed",
     });
+  },
+
+  // ============ Release Flow ============
+
+  /**
+   * POST /rooms/:roomId/actions/initiate-release
+   * Sender initiates release of funds to receiver
+   */
+  async initiateRelease(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onReleaseInitiated(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/confirm-release
+   * Confirm release (both parties must confirm)
+   */
+  async confirmRelease(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onReleaseConfirmed(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/cancel-release
+   * Cancel the release request (go back to FUNDED state)
+   */
+  async cancelRelease(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onReleaseCancelled(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/submit-payout-address
+   * Receiver submits their wallet address to receive payment
+   */
+  async submitPayoutAddress(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+    const body = await c.req.json<SetPayoutAddressRequest>();
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    if (!body.address) {
+      throw new BadRequestError("Address is required");
+    }
+
+    const result = await botService.onPayoutAddressSubmitted(room, user.id, body.address);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/confirm-payout-address
+   * Receiver confirms their payout address and triggers payment
+   */
+  async confirmPayoutAddress(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onPayoutAddressConfirmed(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/change-payout-address
+   * Receiver wants to change their payout address
+   */
+  async changePayoutAddress(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onPayoutAddressRejected(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
   },
 };
