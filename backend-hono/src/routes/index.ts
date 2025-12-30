@@ -4,7 +4,7 @@ import { z } from "zod";
 import { apiReference } from "@scalar/hono-api-reference";
 import { auth } from "@/lib/auth";
 import { openApiDoc } from "@/lib/openapi";
-import { roomController, messageController, escrowController, botController, schedulerController } from "@/controllers";
+import { roomController, messageController, escrowController, botController, schedulerController, disputeController } from "@/controllers";
 import { requireAuth } from "@/middlewares";
 import { getSupportedChainIds } from "@/config/chains";
 
@@ -41,6 +41,16 @@ const confirmAmountSchema = z.object({
 
 const selectFeePayerSchema = z.object({
   feePayer: z.enum(["sender", "receiver", "split"]),
+});
+
+const createDisputeSchema = z.object({
+  explanation: z.string().min(10).max(2000),
+  proofUrl: z.string().url().optional(),
+});
+
+const updateDisputeStatusSchema = z.object({
+  status: z.enum(["PENDING", "UNDER_REVIEW", "RESOLVED"]),
+  adminNotes: z.string().optional(),
 });
 
 // ============ Router Setup ============
@@ -134,3 +144,16 @@ apiRouter.post("/scheduler/send-warnings", schedulerController.sendWarnings);
 apiRouter.get("/scheduler/config", schedulerController.getConfig);
 apiRouter.get("/scheduler/expiring-soon", schedulerController.getExpiringSoon);
 apiRouter.get("/rooms/:roomId/timeout-status", requireAuth, schedulerController.getRoomTimeoutStatus);
+
+// ============ Dispute Routes ============
+
+apiRouter.post("/rooms/:roomId/dispute", requireAuth, zValidator("json", createDisputeSchema), disputeController.createDispute);
+apiRouter.get("/rooms/:roomId/disputes", requireAuth, disputeController.getDisputesByRoom);
+apiRouter.get("/disputes/my", requireAuth, disputeController.getMyDisputes);
+apiRouter.get("/disputes/:disputeId", requireAuth, disputeController.getDisputeById);
+
+// Admin dispute routes (in production, protect with admin auth)
+apiRouter.get("/admin/disputes", disputeController.getAllDisputes);
+apiRouter.get("/admin/disputes/stats", disputeController.getDisputeStats);
+apiRouter.patch("/admin/disputes/:disputeId/status", zValidator("json", updateDisputeStatusSchema), disputeController.updateDisputeStatus);
+apiRouter.post("/admin/disputes/:disputeId/notes", zValidator("json", z.object({ notes: z.string().min(1) })), disputeController.addAdminNotes);
