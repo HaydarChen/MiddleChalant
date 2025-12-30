@@ -1,6 +1,7 @@
 import { roomService } from "./room.service";
 import { messageService } from "./message.service";
 import { blockchainService } from "./blockchain.service";
+import { transactionService } from "./transaction.service";
 import { participantRepository } from "@/repositories";
 import type { Room, Participant, BotMessageMetadata } from "@/types";
 import {
@@ -1078,7 +1079,19 @@ export const botService = {
     const completeMsg = BOT_MESSAGES.DEAL_COMPLETED();
     await this.sendBotMessage(room.id, completeMsg.text, completeMsg.metadata);
 
-    // TODO: Create transaction record for public history (Feature 12)
+    // Record transaction for public history
+    const participants = await roomService.getRoomParticipants(room.id);
+    const sender = participants.find((p) => p.role === ROLES.SENDER)!;
+    const receiver = participants.find((p) => p.role === ROLES.RECEIVER)!;
+
+    await transactionService.recordTransaction({
+      room,
+      sender,
+      receiver,
+      depositTxHash: room.depositTxHash!,
+      releaseTxHash: result.txHash!,
+      status: "COMPLETED",
+    });
 
     return { ok: true };
   },
@@ -1314,6 +1327,20 @@ export const botService = {
 
     const cancelMsg = BOT_MESSAGES.DEAL_CANCELLED();
     await this.sendBotMessage(room.id, cancelMsg.text, cancelMsg.metadata);
+
+    // Record transaction for public history
+    const participants = await roomService.getRoomParticipants(room.id);
+    const sender = participants.find((p) => p.role === ROLES.SENDER)!;
+    const receiver = participants.find((p) => p.role === ROLES.RECEIVER)!;
+
+    await transactionService.recordTransaction({
+      room,
+      sender,
+      receiver,
+      depositTxHash: room.depositTxHash!,
+      releaseTxHash: result.txHash!,
+      status: "REFUNDED",
+    });
 
     return { ok: true };
   },

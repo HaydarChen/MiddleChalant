@@ -4,7 +4,7 @@ import { z } from "zod";
 import { apiReference } from "@scalar/hono-api-reference";
 import { auth } from "@/lib/auth";
 import { openApiDoc } from "@/lib/openapi";
-import { roomController, messageController, escrowController, botController, schedulerController, disputeController } from "@/controllers";
+import { roomController, messageController, escrowController, botController, schedulerController, disputeController, transactionController } from "@/controllers";
 import { requireAuth } from "@/middlewares";
 import { getSupportedChainIds } from "@/config/chains";
 
@@ -157,3 +157,19 @@ apiRouter.get("/admin/disputes", disputeController.getAllDisputes);
 apiRouter.get("/admin/disputes/stats", disputeController.getDisputeStats);
 apiRouter.patch("/admin/disputes/:disputeId/status", zValidator("json", updateDisputeStatusSchema), disputeController.updateDisputeStatus);
 apiRouter.post("/admin/disputes/:disputeId/notes", zValidator("json", z.object({ notes: z.string().min(1) })), disputeController.addAdminNotes);
+
+// ============ Transaction Routes ============
+
+// Public transaction history
+apiRouter.get("/transactions", transactionController.getTransactionHistory);
+apiRouter.get("/transactions/stats", transactionController.getStats);
+apiRouter.get("/transactions/chain/:chainId", transactionController.getTransactionsByChain);
+
+// User's transactions (requires auth) - must be before :transactionId
+apiRouter.get("/transactions/my", requireAuth, transactionController.getMyTransactions);
+
+// Get specific transaction by ID (public)
+apiRouter.get("/transactions/:transactionId", transactionController.getTransactionById);
+
+// Room transaction
+apiRouter.get("/rooms/:roomId/transaction", transactionController.getTransactionByRoom);
