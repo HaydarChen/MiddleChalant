@@ -675,10 +675,21 @@ export const botService = {
       // Proceed to awaiting deposit
       await roomService.updateRoomStep(roomId, ROOM_STEPS.AWAITING_DEPOSIT);
 
-      // Generate escrow address using blockchain service
-      // In production, this would deploy a contract or derive an address
-      const escrowAddress = blockchainService.generateEscrowAddress(roomId, room.chainId);
+      // Get escrow contract address and create deal on blockchain
+      const escrowAddress = blockchainService.getEscrowAddress(room.chainId);
       await roomService.setEscrowAddress(roomId, escrowAddress);
+
+      // Create deal on smart contract (if not in mock mode)
+      const createResult = await blockchainService.createDeal(
+        roomId,
+        room.chainId,
+        depositAmount,
+        room.feePayer!
+      );
+      if (!createResult.success) {
+        console.error("Failed to create deal on blockchain:", createResult.error);
+        // Continue anyway - we can retry or handle this manually
+      }
 
       const depositMsg = BOT_MESSAGES.AWAITING_DEPOSIT(
         escrowAddress,
@@ -774,7 +785,8 @@ export const botService = {
 
     // Create mock deposit via blockchain service
     const { txHash } = await blockchainService.mockDeposit(
-      room.escrowAddress,
+      roomId,
+      room.chainId,
       depositAmount
     );
 
@@ -813,7 +825,7 @@ export const botService = {
 
     // Check for deposit via blockchain service
     const depositInfo = await blockchainService.checkDeposit(
-      room.escrowAddress,
+      roomId,
       expectedAmount,
       room.chainId
     );
@@ -1050,7 +1062,7 @@ export const botService = {
 
     // Execute the release
     const result = await blockchainService.executeRelease(
-      room.escrowAddress,
+      room.id,
       participant.payoutAddress,
       receiverAmount,
       room.chainId
@@ -1299,7 +1311,7 @@ export const botService = {
 
     // Execute the refund
     const result = await blockchainService.executeRefund(
-      room.escrowAddress,
+      room.id,
       participant.payoutAddress,
       depositAmount,
       room.chainId

@@ -5,8 +5,9 @@ export interface ChainConfig {
   name: string;
   shortName: string;
   usdtAddress: string;
+  masterEscrowAddress: string;
   explorerUrl: string;
-  rpcUrl?: string; // Set via environment variable
+  rpcUrl: string;
 }
 
 // Mainnet chains
@@ -16,14 +17,18 @@ export const MAINNET_CHAINS: Record<number, ChainConfig> = {
     name: "Ethereum Mainnet",
     shortName: "ETH",
     usdtAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+    masterEscrowAddress: process.env.MASTER_ESCROW_ETH || "",
     explorerUrl: "https://etherscan.io",
+    rpcUrl: process.env.ETH_RPC_URL || "https://eth.llamarpc.com",
   },
   56: {
     id: 56,
     name: "BNB Smart Chain",
     shortName: "BSC",
     usdtAddress: "0x55d398326f99059fF775485246999027B3197955",
+    masterEscrowAddress: process.env.MASTER_ESCROW_BSC || "",
     explorerUrl: "https://bscscan.com",
+    rpcUrl: process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org",
   },
 };
 
@@ -34,14 +39,18 @@ export const TESTNET_CHAINS: Record<number, ChainConfig> = {
     name: "Sepolia Testnet",
     shortName: "Sepolia",
     usdtAddress: "0x7169D38820dfd117C3FA1f22a697dBA58d90BA06", // Mock USDT on Sepolia
+    masterEscrowAddress: process.env.MASTER_ESCROW_SEPOLIA || "",
     explorerUrl: "https://sepolia.etherscan.io",
+    rpcUrl: process.env.SEPOLIA_RPC_URL || "https://rpc.sepolia.org",
   },
   97: {
     id: 97,
     name: "BSC Testnet",
     shortName: "BSC Testnet",
     usdtAddress: "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd", // Mock USDT on BSC Testnet
+    masterEscrowAddress: process.env.MASTER_ESCROW_BSC_TESTNET || "",
     explorerUrl: "https://testnet.bscscan.com",
+    rpcUrl: process.env.BSC_TESTNET_RPC_URL || "https://data-seed-prebsc-1-s1.binance.org:8545",
   },
 };
 
@@ -66,6 +75,14 @@ export function getUsdtAddress(chainId: number): string | undefined {
 
 export function getSupportedChainIds(): number[] {
   return Object.keys(SUPPORTED_CHAINS).map(Number);
+}
+
+export function getMasterEscrowAddress(chainId: number): string | undefined {
+  return SUPPORTED_CHAINS[chainId]?.masterEscrowAddress || undefined;
+}
+
+export function getRpcUrl(chainId: number): string | undefined {
+  return SUPPORTED_CHAINS[chainId]?.rpcUrl;
 }
 
 // USDT has 6 decimals on both ETH and BSC

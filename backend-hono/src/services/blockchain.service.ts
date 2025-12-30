@@ -1,32 +1,41 @@
 /**
- * Blockchain Service - Mock Implementation
+ * Blockchain Service
  *
- * This service handles blockchain interactions for the escrow system.
- * Currently implemented as mocks that can be replaced with real blockchain
- * functionality when smart contracts are deployed.
- *
- * TODO: Replace mock implementations with actual blockchain calls:
- * - generateEscrowAddress: Deploy/derive actual escrow contract address
- * - checkDeposit: Query blockchain for USDT transfers to escrow address
- * - executeRelease: Call smart contract release function
- * - executeRefund: Call smart contract refund function
+ * Handles blockchain interactions for the escrow system using viem.
+ * Supports both real blockchain calls and mock mode for development.
  */
 
 import { createHash } from "crypto";
-import { getChainConfig, formatUsdtAmount, USDT_DECIMALS } from "@/config/chains";
+import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  keccak256,
+  encodeAbiParameters,
+  parseAbiParameters,
+  type Address,
+  type Hash,
+  type PublicClient,
+  type WalletClient,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { sepolia, bscTestnet, mainnet, bsc } from "viem/chains";
+import {
+  getChainConfig,
+  getMasterEscrowAddress,
+  getRpcUrl,
+  getUsdtAddress,
+} from "@/config/chains";
+import masterEscrowAbi from "@/contracts/masterEscrow.abi.json";
 
-// Mock deposit storage for testing (in-memory)
-// In production, this would be replaced by blockchain queries
-const mockDeposits = new Map<
-  string,
-  { amount: string; txHash: string; confirmedAt: Date }
->();
+// ============ Types ============
 
 export interface DepositInfo {
   found: boolean;
   amount?: string;
   txHash?: string;
   confirmedAt?: Date;
+  status?: number;
 }
 
 export interface TransferResult {
@@ -35,73 +44,303 @@ export interface TransferResult {
   error?: string;
 }
 
+export interface DealInfo {
+  roomId: string;
+  token: string;
+  dealAmount: bigint;
+  depositAmount: bigint;
+  fee: bigint;
+  feePayer: number;
+  status: number;
+  createdAt: bigint;
+  fundedAt: bigint;
+  completedAt: bigint;
+  depositedBy: string;
+}
+
+// Deal status enum matching contract
+export const DealStatus = {
+  CREATED: 0,
+  FUNDED: 1,
+  RELEASED: 2,
+  REFUNDED: 3,
+  CANCELLED: 4,
+} as const;
+
+// Fee payer enum matching contract
+export const FeePayer = {
+  SENDER: 0,
+  RECEIVER: 1,
+  SPLIT: 2,
+} as const;
+
+// ============ Chain Configuration ============
+
+const viemChains = {
+  1: mainnet,
+  56: bsc,
+  11155111: sepolia,
+  97: bscTestnet,
+} as const;
+
+// ============ Mock Storage (for development without contract) ============
+
+const mockDeposits = new Map<
+  string,
+  { amount: string; txHash: string; confirmedAt: Date }
+>();
+
+// ============ Client Factory ============
+
+function getPublicClient(chainId: number): PublicClient {
+  const rpcUrl = getRpcUrl(chainId);
+  const chain = viemChains[chainId as keyof typeof viemChains];
+
+  if (!chain) {
+    throw new Error(`Unsupported chain ID: ${chainId}`);
+  }
+
+  return createPublicClient({
+    chain,
+    transport: http(rpcUrl),
+  });
+}
+
+function getWalletClient(chainId: number) {
+  const privateKey = process.env.BOT_PRIVATE_KEY;
+  if (!privateKey) {
+    throw new Error("BOT_PRIVATE_KEY environment variable is not set");
+  }
+
+  const rpcUrl = getRpcUrl(chainId);
+  const chain = viemChains[chainId as keyof typeof viemChains];
+
+  if (!chain) {
+    throw new Error(`Unsupported chain ID: ${chainId}`);
+  }
+
+  const account = privateKeyToAccount(
+    privateKey.startsWith("0x") ? (privateKey as `0x${string}`) : (`0x${privateKey}` as `0x${string}`)
+  );
+
+  const client = createWalletClient({
+    account,
+    chain,
+    transport: http(rpcUrl),
+  });
+
+  return { client, account };
+}
+
+// ============ Helper Functions ============
+
+/**
+ * Generate a deterministic deal ID from room ID and chain ID
+ */
+function generateDealId(roomId: string, chainId: number): `0x${string}` {
+  // Pad roomId to bytes32
+  const roomIdBytes = keccak256(
+    encodeAbiParameters(parseAbiParameters("string"), [roomId])
+  );
+  // Generate deal ID: keccak256(roomIdBytes, chainId)
+  return keccak256(
+    encodeAbiParameters(parseAbiParameters("bytes32, uint256"), [
+      roomIdBytes,
+      BigInt(chainId),
+    ])
+  );
+}
+
+/**
+ * Convert fee payer string to contract enum value
+ */
+function feePayerToEnum(feePayer: string): number {
+  switch (feePayer) {
+    case "sender":
+      return FeePayer.SENDER;
+    case "receiver":
+      return FeePayer.RECEIVER;
+    case "split":
+      return FeePayer.SPLIT;
+    default:
+      return FeePayer.SENDER;
+  }
+}
+
+/**
+ * Check if we're in mock mode (no contract configured)
+ */
+function isMockMode(chainId: number): boolean {
+  const contractAddress = getMasterEscrowAddress(chainId);
+  return !contractAddress || !process.env.BOT_PRIVATE_KEY;
+}
+
+// ============ Blockchain Service ============
+
 export const blockchainService = {
   /**
-   * Generate a deterministic escrow address for a room
-   *
-   * MOCK: Creates a deterministic address based on room ID and chain ID.
-   * In production, this would either:
-   * 1. Deploy a new escrow contract and return its address
-   * 2. Use CREATE2 to derive a deterministic address
-   * 3. Assign from a pool of pre-deployed escrow contracts
+   * Check if running in mock mode
    */
-  generateEscrowAddress(roomId: string, chainId: number): string {
-    // Create deterministic address from room ID and chain
-    const input = `escrow:${chainId}:${roomId}`;
-    const hash = createHash("sha256").update(input).digest("hex");
-    // Take first 40 chars and prefix with 0x
-    return "0x" + hash.slice(0, 40);
+  isMockMode,
+
+  /**
+   * Generate deal ID for a room
+   */
+  getDealId(roomId: string, chainId: number): string {
+    return generateDealId(roomId, chainId);
   },
 
   /**
-   * Check if a deposit has been received at the escrow address
-   *
-   * MOCK: Checks in-memory mock deposits.
-   * In production, this would query the blockchain for:
-   * 1. USDT transfer events to the escrow address
-   * 2. Current USDT balance of the escrow address
+   * Get the escrow contract address for depositing
+   * In the new architecture, users deposit directly to the MasterEscrow contract
+   */
+  getEscrowAddress(chainId: number): string {
+    const contractAddress = getMasterEscrowAddress(chainId);
+    if (!contractAddress) {
+      // Mock mode: generate deterministic address
+      const hash = createHash("sha256")
+        .update(`escrow:${chainId}`)
+        .digest("hex");
+      return "0x" + hash.slice(0, 40);
+    }
+    return contractAddress;
+  },
+
+  /**
+   * Create a deal on the smart contract
+   */
+  async createDeal(
+    roomId: string,
+    chainId: number,
+    dealAmount: string,
+    feePayer: string
+  ): Promise<TransferResult> {
+    if (isMockMode(chainId)) {
+      // Mock mode
+      const txHash =
+        "0x" +
+        createHash("sha256")
+          .update(`createDeal:${roomId}:${Date.now()}`)
+          .digest("hex");
+      return { success: true, txHash };
+    }
+
+    try {
+      const contractAddress = getMasterEscrowAddress(chainId) as Address;
+      const tokenAddress = getUsdtAddress(chainId) as Address;
+      const { client: walletClient, account } = getWalletClient(chainId);
+      const publicClient = getPublicClient(chainId);
+
+      const dealId = generateDealId(roomId, chainId);
+      const roomIdBytes = keccak256(
+        encodeAbiParameters(parseAbiParameters("string"), [roomId])
+      );
+
+      const chain = viemChains[chainId as keyof typeof viemChains];
+      const hash = await walletClient.writeContract({
+        address: contractAddress,
+        abi: masterEscrowAbi,
+        functionName: "createDeal",
+        args: [
+          dealId,
+          roomIdBytes,
+          tokenAddress,
+          BigInt(dealAmount),
+          feePayerToEnum(feePayer),
+        ],
+        chain,
+        account,
+      });
+
+      // Wait for confirmation
+      await publicClient.waitForTransactionReceipt({ hash });
+
+      return { success: true, txHash: hash };
+    } catch (error) {
+      console.error("Error creating deal:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  },
+
+  /**
+   * Check if a deposit has been received for a deal
    */
   async checkDeposit(
-    escrowAddress: string,
+    roomId: string,
     expectedAmount: string,
     chainId: number
   ): Promise<DepositInfo> {
-    // Check mock deposits
-    const deposit = mockDeposits.get(escrowAddress.toLowerCase());
+    if (isMockMode(chainId)) {
+      // Check mock deposits
+      const escrowAddress = this.getEscrowAddress(chainId);
+      const deposit = mockDeposits.get(
+        `${escrowAddress}:${roomId}`.toLowerCase()
+      );
 
-    if (!deposit) {
-      return { found: false };
+      if (!deposit) {
+        return { found: false };
+      }
+
+      return {
+        found: true,
+        amount: deposit.amount,
+        txHash: deposit.txHash,
+        confirmedAt: deposit.confirmedAt,
+        status: DealStatus.FUNDED,
+      };
     }
 
-    // In production, you'd verify the amount matches
-    // For now, we accept any deposit that was mocked
-    return {
-      found: true,
-      amount: deposit.amount,
-      txHash: deposit.txHash,
-      confirmedAt: deposit.confirmedAt,
-    };
+    try {
+      const contractAddress = getMasterEscrowAddress(chainId) as Address;
+      const publicClient = getPublicClient(chainId);
+
+      const dealId = generateDealId(roomId, chainId);
+
+      // Check if deal exists and its status
+      const deal = (await publicClient.readContract({
+        address: contractAddress,
+        abi: masterEscrowAbi,
+        functionName: "getDeal",
+        args: [dealId],
+      })) as DealInfo;
+
+      if (deal.status === DealStatus.FUNDED) {
+        return {
+          found: true,
+          amount: deal.depositAmount.toString(),
+          status: deal.status,
+          confirmedAt: new Date(Number(deal.fundedAt) * 1000),
+        };
+      }
+
+      return { found: false, status: deal.status };
+    } catch (error) {
+      console.error("Error checking deposit:", error);
+      return { found: false };
+    }
   },
 
   /**
    * Mock a deposit for testing purposes
-   *
-   * This allows manual triggering of deposits during development.
-   * This function should be removed or disabled in production.
    */
   async mockDeposit(
-    escrowAddress: string,
+    roomId: string,
+    chainId: number,
     amount: string,
     txHash?: string
   ): Promise<{ txHash: string }> {
+    const escrowAddress = this.getEscrowAddress(chainId);
     const finalTxHash =
       txHash ||
       "0x" +
         createHash("sha256")
-          .update(`tx:${escrowAddress}:${Date.now()}`)
+          .update(`tx:${roomId}:${Date.now()}`)
           .digest("hex");
 
-    mockDeposits.set(escrowAddress.toLowerCase(), {
+    mockDeposits.set(`${escrowAddress}:${roomId}`.toLowerCase(), {
       amount,
       txHash: finalTxHash,
       confirmedAt: new Date(),
@@ -112,70 +351,180 @@ export const blockchainService = {
 
   /**
    * Execute release of funds to receiver
-   *
-   * MOCK: Returns a fake transaction hash.
-   * In production, this would:
-   * 1. Call the smart contract's release function
-   * 2. Wait for transaction confirmation
-   * 3. Return the actual transaction hash
    */
   async executeRelease(
-    escrowAddress: string,
+    roomId: string,
     receiverAddress: string,
     amount: string,
     chainId: number
   ): Promise<TransferResult> {
-    // Simulate blockchain delay
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (isMockMode(chainId)) {
+      // Mock mode
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const escrowAddress = this.getEscrowAddress(chainId);
+      mockDeposits.delete(`${escrowAddress}:${roomId}`.toLowerCase());
 
-    // Mock success
-    const txHash =
-      "0x" +
-      createHash("sha256")
-        .update(`release:${escrowAddress}:${receiverAddress}:${Date.now()}`)
-        .digest("hex");
+      const txHash =
+        "0x" +
+        createHash("sha256")
+          .update(`release:${roomId}:${receiverAddress}:${Date.now()}`)
+          .digest("hex");
 
-    // Clear mock deposit
-    mockDeposits.delete(escrowAddress.toLowerCase());
+      return { success: true, txHash };
+    }
 
-    return {
-      success: true,
-      txHash,
-    };
+    try {
+      const contractAddress = getMasterEscrowAddress(chainId) as Address;
+      const { client: walletClient, account } = getWalletClient(chainId);
+      const publicClient = getPublicClient(chainId);
+
+      const dealId = generateDealId(roomId, chainId);
+      const chain = viemChains[chainId as keyof typeof viemChains];
+
+      const hash = await walletClient.writeContract({
+        address: contractAddress,
+        abi: masterEscrowAbi,
+        functionName: "release",
+        args: [dealId, receiverAddress as Address],
+        chain,
+        account,
+      });
+
+      // Wait for confirmation
+      await publicClient.waitForTransactionReceipt({ hash });
+
+      return { success: true, txHash: hash };
+    } catch (error) {
+      console.error("Error executing release:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
   },
 
   /**
    * Execute refund of funds to sender
-   *
-   * MOCK: Returns a fake transaction hash.
-   * In production, this would:
-   * 1. Call the smart contract's refund function
-   * 2. Wait for transaction confirmation
-   * 3. Return the actual transaction hash
    */
   async executeRefund(
-    escrowAddress: string,
+    roomId: string,
     senderAddress: string,
     amount: string,
     chainId: number
   ): Promise<TransferResult> {
-    // Simulate blockchain delay
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (isMockMode(chainId)) {
+      // Mock mode
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const escrowAddress = this.getEscrowAddress(chainId);
+      mockDeposits.delete(`${escrowAddress}:${roomId}`.toLowerCase());
 
-    // Mock success
-    const txHash =
-      "0x" +
-      createHash("sha256")
-        .update(`refund:${escrowAddress}:${senderAddress}:${Date.now()}`)
-        .digest("hex");
+      const txHash =
+        "0x" +
+        createHash("sha256")
+          .update(`refund:${roomId}:${senderAddress}:${Date.now()}`)
+          .digest("hex");
 
-    // Clear mock deposit
-    mockDeposits.delete(escrowAddress.toLowerCase());
+      return { success: true, txHash };
+    }
 
-    return {
-      success: true,
-      txHash,
-    };
+    try {
+      const contractAddress = getMasterEscrowAddress(chainId) as Address;
+      const { client: walletClient, account } = getWalletClient(chainId);
+      const publicClient = getPublicClient(chainId);
+
+      const dealId = generateDealId(roomId, chainId);
+      const chain = viemChains[chainId as keyof typeof viemChains];
+
+      const hash = await walletClient.writeContract({
+        address: contractAddress,
+        abi: masterEscrowAbi,
+        functionName: "refund",
+        args: [dealId, senderAddress as Address],
+        chain,
+        account,
+      });
+
+      // Wait for confirmation
+      await publicClient.waitForTransactionReceipt({ hash });
+
+      return { success: true, txHash: hash };
+    } catch (error) {
+      console.error("Error executing refund:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  },
+
+  /**
+   * Cancel a deal before it's funded
+   */
+  async cancelDeal(roomId: string, chainId: number): Promise<TransferResult> {
+    if (isMockMode(chainId)) {
+      const txHash =
+        "0x" +
+        createHash("sha256")
+          .update(`cancel:${roomId}:${Date.now()}`)
+          .digest("hex");
+      return { success: true, txHash };
+    }
+
+    try {
+      const contractAddress = getMasterEscrowAddress(chainId) as Address;
+      const { client: walletClient, account } = getWalletClient(chainId);
+      const publicClient = getPublicClient(chainId);
+
+      const dealId = generateDealId(roomId, chainId);
+      const chain = viemChains[chainId as keyof typeof viemChains];
+
+      const hash = await walletClient.writeContract({
+        address: contractAddress,
+        abi: masterEscrowAbi,
+        functionName: "cancelDeal",
+        args: [dealId],
+        chain,
+        account,
+      });
+
+      await publicClient.waitForTransactionReceipt({ hash });
+
+      return { success: true, txHash: hash };
+    } catch (error) {
+      console.error("Error cancelling deal:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  },
+
+  /**
+   * Get deal information from contract
+   */
+  async getDeal(roomId: string, chainId: number): Promise<DealInfo | null> {
+    if (isMockMode(chainId)) {
+      return null;
+    }
+
+    try {
+      const contractAddress = getMasterEscrowAddress(chainId) as Address;
+      const publicClient = getPublicClient(chainId);
+
+      const dealId = generateDealId(roomId, chainId);
+
+      const deal = (await publicClient.readContract({
+        address: contractAddress,
+        abi: masterEscrowAbi,
+        functionName: "getDeal",
+        args: [dealId],
+      })) as DealInfo;
+
+      return deal;
+    } catch (error) {
+      console.error("Error getting deal:", error);
+      return null;
+    }
   },
 
   /**
