@@ -1,7 +1,8 @@
 import { messageRepository } from "@/repositories";
 import { roomRepository } from "@/repositories";
 import { generateId } from "@/utils";
-import type { Message, SendMessageRequest } from "@/types";
+import type { Message, SendMessageRequest, BotMessageMetadata, SenderType } from "@/types";
+import { SENDER_TYPES } from "@/types";
 
 export const messageService = {
   async getMessagesByRoomId(
@@ -24,7 +25,7 @@ export const messageService = {
 
   async sendMessage(
     roomId: string,
-    senderAddress: string,
+    senderId: string,
     data: SendMessageRequest
   ): Promise<{ ok: boolean; message?: Message; error?: string }> {
     // Verify room exists
@@ -36,8 +37,49 @@ export const messageService = {
     const message = await messageRepository.create({
       id: generateId("msg"),
       roomId,
-      sender: senderAddress,
+      senderId,
+      senderType: SENDER_TYPES.USER,
       text: data.text,
+      createdAt: new Date(),
+    });
+
+    return { ok: true, message };
+  },
+
+  async sendBotMessage(
+    roomId: string,
+    text: string,
+    metadata?: BotMessageMetadata
+  ): Promise<{ ok: boolean; message?: Message; error?: string }> {
+    // Verify room exists
+    const room = await roomRepository.findById(roomId);
+    if (!room) {
+      return { ok: false, error: "Room not found" };
+    }
+
+    const message = await messageRepository.create({
+      id: generateId("msg"),
+      roomId,
+      senderId: null, // Bot has no user ID
+      senderType: SENDER_TYPES.BOT,
+      text,
+      metadata: metadata ? JSON.stringify(metadata) : null,
+      createdAt: new Date(),
+    });
+
+    return { ok: true, message };
+  },
+
+  async sendSystemMessage(
+    roomId: string,
+    text: string
+  ): Promise<{ ok: boolean; message?: Message; error?: string }> {
+    const message = await messageRepository.create({
+      id: generateId("msg"),
+      roomId,
+      senderId: null,
+      senderType: SENDER_TYPES.SYSTEM,
+      text,
       createdAt: new Date(),
     });
 

@@ -74,35 +74,96 @@ export const accountRelations = relations(account, ({ one }) => ({
 
 // ============ Application Tables ============
 
+// Room steps (bot flow phases)
+// WAITING_FOR_PEER -> ROLE_SELECTION -> AMOUNT_AGREEMENT -> FEE_SELECTION ->
+// AWAITING_DEPOSIT -> FUNDED -> RELEASING/CANCELLING -> COMPLETED/CANCELLED/EXPIRED
+
 export const rooms = pgTable("rooms", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  chainId: integer("chain_id").notNull(),
-  tokenAddress: text("token_address").notNull(),
-  amount: numeric("amount", { precision: 78, scale: 0 }).notNull(),
-  factoryAddress: text("factory_address"),
-  escrowAddress: text("escrow_address"),
-  status: text("status").notNull().default("AWAITING_DEPOSIT"),
+  roomCode: text("room_code").notNull().unique(), // 6-char code for joining
+  chainId: integer("chain_id").notNull(), // 1 = ETH, 56 = BSC (mainnet) or testnets
+  tokenAddress: text("token_address").notNull(), // USDT address for the chain
+  amount: numeric("amount", { precision: 78, scale: 0 }), // Set during AMOUNT_AGREEMENT (nullable initially)
+  feePayer: text("fee_payer"), // "sender" | "receiver" | "split" - set during FEE_SELECTION
+  escrowAddress: text("escrow_address"), // Bot-controlled escrow wallet address
+  depositTxHash: text("deposit_tx_hash"), // Transaction hash of the deposit
+  releaseTxHash: text("release_tx_hash"), // Transaction hash of the release/refund
+  step: text("step").notNull().default("WAITING_FOR_PEER"), // Current bot flow phase
+  status: text("status").notNull().default("OPEN"), // OPEN, COMPLETED, CANCELLED, EXPIRED, DISPUTED
+  creatorId: text("creator_id").notNull().references(() => user.id), // Who created the room
+  lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).defaultNow().notNull(), // For timeout tracking
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  index("rooms_room_code_idx").on(table.roomCode),
+  index("rooms_status_idx").on(table.status),
+]);
 
 export const participants = pgTable("participants", {
   id: text("id").primaryKey(),
-  roomId: text("room_id").notNull(),
-  address: text("address").notNull(),
-  role: text("role").notNull(), // "buyer" | "seller"
+  roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull().references(() => user.id),
+  role: text("role"), // "sender" | "receiver" - null until selected
+  roleConfirmed: boolean("role_confirmed").notNull().default(false),
+  amountConfirmed: boolean("amount_confirmed").notNull().default(false),
+  feeConfirmed: boolean("fee_confirmed").notNull().default(false),
+  releaseConfirmed: boolean("release_confirmed").notNull().default(false), // For double confirmation
+  cancelConfirmed: boolean("cancel_confirmed").notNull().default(false),
+  payoutAddress: text("payout_address"), // Wallet address for receiving funds
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  index("participants_room_id_idx").on(table.roomId),
+  index("participants_user_id_idx").on(table.userId),
+]);
 
 export const messages = pgTable("messages", {
   id: text("id").primaryKey(),
-  roomId: text("room_id").notNull(),
-  sender: text("sender").notNull(),
+  roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
+  senderId: text("sender_id").references(() => user.id), // null for bot messages
+  senderType: text("sender_type").notNull().default("user"), // "user" | "bot" | "system"
   text: text("text").notNull(),
+  metadata: text("metadata"), // JSON string for bot actions, buttons, embedded data
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  index("messages_room_id_idx").on(table.roomId),
+]);
+
+// Disputes table for report functionality (mock in v1)
+export const disputes = pgTable("disputes", {
+  id: text("id").primaryKey(),
+  roomId: text("room_id").notNull().references(() => rooms.id),
+  reporterId: text("reporter_id").notNull().references(() => user.id),
+  explanation: text("explanation").notNull(),
+  proofUrl: text("proof_url"), // URL or file reference
+  status: text("status").notNull().default("PENDING"), // PENDING, UNDER_REVIEW, RESOLVED
+  adminNotes: text("admin_notes"), // For future admin use
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("disputes_room_id_idx").on(table.roomId),
+  index("disputes_status_idx").on(table.status),
+]);
+
+// Transaction history for public display
+export const transactions = pgTable("transactions", {
+  id: text("id").primaryKey(),
+  roomId: text("room_id").notNull().references(() => rooms.id),
+  chainId: integer("chain_id").notNull(),
+  senderId: text("sender_id").notNull().references(() => user.id),
+  receiverId: text("receiver_id").notNull().references(() => user.id),
+  amount: numeric("amount", { precision: 78, scale: 0 }).notNull(),
+  fee: numeric("fee", { precision: 78, scale: 0 }).notNull(),
+  feePayer: text("fee_payer").notNull(), // "sender" | "receiver" | "split"
+  depositTxHash: text("deposit_tx_hash").notNull(),
+  releaseTxHash: text("release_tx_hash").notNull(),
+  status: text("status").notNull(), // COMPLETED, REFUNDED
+  completedAt: timestamp("completed_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("transactions_chain_id_idx").on(table.chainId),
+  index("transactions_completed_at_idx").on(table.completedAt),
+]);
 
 // Note: Old siweNonces and sessions tables removed - using BetterAuth tables now
 
@@ -126,5 +187,68 @@ export const lastBlocks = pgTable("last_blocks", {
   blockNumber: numeric("block_number", { precision: 78, scale: 0 }).notNull(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.chainId] }),
+}));
+
+// ============ Application Relations ============
+
+export const roomsRelations = relations(rooms, ({ one, many }) => ({
+  creator: one(user, {
+    fields: [rooms.creatorId],
+    references: [user.id],
+  }),
+  participants: many(participants),
+  messages: many(messages),
+  disputes: many(disputes),
+  transaction: one(transactions),
+}));
+
+export const participantsRelations = relations(participants, ({ one }) => ({
+  room: one(rooms, {
+    fields: [participants.roomId],
+    references: [rooms.id],
+  }),
+  user: one(user, {
+    fields: [participants.userId],
+    references: [user.id],
+  }),
+}));
+
+export const messagesRelations = relations(messages, ({ one }) => ({
+  room: one(rooms, {
+    fields: [messages.roomId],
+    references: [rooms.id],
+  }),
+  sender: one(user, {
+    fields: [messages.senderId],
+    references: [user.id],
+  }),
+}));
+
+export const disputesRelations = relations(disputes, ({ one }) => ({
+  room: one(rooms, {
+    fields: [disputes.roomId],
+    references: [rooms.id],
+  }),
+  reporter: one(user, {
+    fields: [disputes.reporterId],
+    references: [user.id],
+  }),
+}));
+
+export const transactionsRelations = relations(transactions, ({ one }) => ({
+  room: one(rooms, {
+    fields: [transactions.roomId],
+    references: [rooms.id],
+  }),
+  sender: one(user, {
+    fields: [transactions.senderId],
+    references: [user.id],
+    relationName: "transactionSender",
+  }),
+  receiver: one(user, {
+    fields: [transactions.receiverId],
+    references: [user.id],
+    relationName: "transactionReceiver",
+  }),
 }));
 

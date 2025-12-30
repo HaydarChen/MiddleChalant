@@ -1,10 +1,22 @@
-import { nanoid } from "nanoid";
+import { nanoid, customAlphabet } from "nanoid";
+
+// Custom alphabet for room codes (uppercase alphanumeric, excluding confusing chars)
+const roomCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const generateCode = customAlphabet(roomCodeAlphabet, 6);
 
 /**
  * Generate a unique ID with optional prefix
  */
 export function generateId(prefix = "id"): string {
   return `${prefix}_${nanoid(10)}`;
+}
+
+/**
+ * Generate a 6-character room code (uppercase alphanumeric)
+ * Excludes confusing characters like 0, O, 1, I
+ */
+export function generateRoomCode(): string {
+  return generateCode();
 }
 
 /**

@@ -33,7 +33,7 @@ export const messageController = {
    */
   async send(c: Context) {
     const roomId = c.req.param("roomId");
-    const user = getUser(c as any);
+    const user = getUser(c);
 
     if (!user) {
       throw new UnauthorizedError();
@@ -49,10 +49,7 @@ export const messageController = {
       throw new BadRequestError("Message too long (max 2000 characters)");
     }
 
-    // Use wallet address if available, otherwise user email/id
-    const senderAddress = (user as any).walletAddress ?? user.email ?? user.id;
-
-    const result = await messageService.sendMessage(roomId, senderAddress, {
+    const result = await messageService.sendMessage(roomId, user.id, {
       text: body.text.trim(),
     });
 

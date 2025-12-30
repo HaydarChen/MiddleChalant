@@ -6,21 +6,20 @@ import { auth } from "@/lib/auth";
 import { openApiDoc } from "@/lib/openapi";
 import { roomController, messageController, escrowController } from "@/controllers";
 import { requireAuth } from "@/middlewares";
+import { getSupportedChainIds } from "@/config/chains";
 
 // ============ Validation Schemas ============
 
 const createRoomSchema = z.object({
   name: z.string().min(2).max(100),
-  chainId: z.number(),
-  tokenAddress: z.string(),
-  amount: z.string(),
-  buyerAddress: z.string().optional(),
-  sellerAddress: z.string().optional(),
+  chainId: z.number().refine(
+    (val) => getSupportedChainIds().includes(val),
+    { message: "Unsupported chain ID" }
+  ),
 });
 
-const joinRoomSchema = z.object({
-  address: z.string(),
-  role: z.enum(["buyer", "seller"]),
+const joinRoomByCodeSchema = z.object({
+  roomCode: z.string().length(6).toUpperCase(),
 });
 
 const sendMessageSchema = z.object({
@@ -56,8 +55,9 @@ apiRouter.on(["POST", "GET"], "/auth/*", (c) => auth.handler(c.req.raw));
 
 apiRouter.get("/rooms", requireAuth, roomController.getAll);
 apiRouter.post("/rooms", requireAuth, zValidator("json", createRoomSchema), roomController.create);
+apiRouter.post("/rooms/join", requireAuth, zValidator("json", joinRoomByCodeSchema), roomController.joinByCode);
+apiRouter.get("/rooms/code/:roomCode", requireAuth, roomController.getByCode);
 apiRouter.get("/rooms/:roomId", requireAuth, roomController.getById);
-apiRouter.post("/rooms/:roomId/join", requireAuth, zValidator("json", joinRoomSchema), roomController.join);
 apiRouter.get("/rooms/:roomId/participants", requireAuth, roomController.getParticipants);
 
 // ============ Message Routes (all require auth) ============
