@@ -4,7 +4,7 @@ import { z } from "zod";
 import { apiReference } from "@scalar/hono-api-reference";
 import { auth } from "@/lib/auth";
 import { openApiDoc } from "@/lib/openapi";
-import { roomController, messageController, escrowController } from "@/controllers";
+import { roomController, messageController, escrowController, botController } from "@/controllers";
 import { requireAuth } from "@/middlewares";
 import { getSupportedChainIds } from "@/config/chains";
 
@@ -24,6 +24,23 @@ const joinRoomByCodeSchema = z.object({
 
 const sendMessageSchema = z.object({
   text: z.string().min(1).max(2000),
+});
+
+// Bot action schemas
+const selectRoleSchema = z.object({
+  role: z.enum(["sender", "receiver"]),
+});
+
+const proposeAmountSchema = z.object({
+  amount: z.string().min(1),
+});
+
+const confirmAmountSchema = z.object({
+  confirmed: z.boolean(),
+});
+
+const selectFeePayerSchema = z.object({
+  feePayer: z.enum(["sender", "receiver", "split"]),
 });
 
 // ============ Router Setup ============
@@ -74,6 +91,16 @@ apiRouter.post(
   zValidator("json", sendMessageSchema),
   messageController.send
 );
+
+// ============ Bot Action Routes (all require auth) ============
+
+apiRouter.get("/rooms/:roomId/state", requireAuth, botController.getRoomState);
+apiRouter.post("/rooms/:roomId/actions/select-role", requireAuth, zValidator("json", selectRoleSchema), botController.selectRole);
+apiRouter.post("/rooms/:roomId/actions/reset-roles", requireAuth, botController.resetRoles);
+apiRouter.post("/rooms/:roomId/actions/propose-amount", requireAuth, zValidator("json", proposeAmountSchema), botController.proposeAmount);
+apiRouter.post("/rooms/:roomId/actions/confirm-amount", requireAuth, zValidator("json", confirmAmountSchema), botController.confirmAmount);
+apiRouter.post("/rooms/:roomId/actions/select-fee-payer", requireAuth, zValidator("json", selectFeePayerSchema), botController.selectFeePayer);
+apiRouter.post("/rooms/:roomId/actions/confirm-fee", requireAuth, botController.confirmFee);
 
 // ============ Escrow Routes ============
 

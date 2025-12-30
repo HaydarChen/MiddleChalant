@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { roomService } from "@/services";
+import { roomService, botService } from "@/services";
 import { NotFoundError, BadRequestError } from "@/middlewares";
 import { getUser } from "@/middlewares/auth.middleware";
 import type { CreateRoomRequest, JoinRoomByCodeRequest } from "@/types";
@@ -108,6 +108,9 @@ export const roomController = {
       // Creator automatically joins the room
       await roomService.joinRoomByCode(room.roomCode, user.id);
 
+      // Send bot welcome message
+      await botService.onRoomCreated(room);
+
       // Get updated room with participant
       const updatedRoom = await roomService.getRoomById(room.id);
       const participants = await roomService.getRoomParticipants(room.id);
@@ -136,10 +139,21 @@ export const roomController = {
       throw new BadRequestError("Room code is required");
     }
 
+    // Check participants count before joining
+    const roomBefore = await roomService.getRoomByCode(body.roomCode);
+    const participantsBefore = roomBefore
+      ? await roomService.getRoomParticipants(roomBefore.id)
+      : [];
+
     const result = await roomService.joinRoomByCode(body.roomCode, user.id);
 
     if (!result.ok) {
       return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    // If this was the second user joining, send bot notifications
+    if (participantsBefore.length === 1 && result.room) {
+      await botService.onUserJoined(result.room, user.id);
     }
 
     const participants = await roomService.getRoomParticipants(result.room!.id);
