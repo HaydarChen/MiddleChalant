@@ -183,4 +183,74 @@ export const botController = {
 
     return c.json({ ok: true, data: state });
   },
+
+  /**
+   * GET /rooms/:roomId/deposit-info
+   * Get deposit information for a room
+   */
+  async getDepositInfo(c: Context) {
+    const roomId = c.req.param("roomId");
+
+    const depositInfo = await botService.getDepositInfo(roomId);
+    if (!depositInfo) {
+      throw new NotFoundError("Room not found");
+    }
+
+    return c.json({ ok: true, data: depositInfo });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/check-deposit
+   * Check for incoming deposits (queries blockchain)
+   */
+  async checkDeposit(c: Context) {
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.checkForDeposit(roomId);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({
+      ok: true,
+      found: result.found,
+      txHash: result.txHash,
+    });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/mock-deposit
+   * Mock a deposit for testing (DEV ONLY)
+   * This simulates a deposit without actual blockchain interaction
+   */
+  async mockDeposit(c: Context) {
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.mockDeposit(roomId);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({
+      ok: true,
+      txHash: result.txHash,
+      message: "Mock deposit created and processed",
+    });
+  },
 };

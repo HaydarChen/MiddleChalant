@@ -1,5 +1,6 @@
 import { roomService } from "./room.service";
 import { messageService } from "./message.service";
+import { blockchainService } from "./blockchain.service";
 import { participantRepository } from "@/repositories";
 import type { Room, Participant, BotMessageMetadata } from "@/types";
 import {
@@ -652,9 +653,9 @@ export const botService = {
       // Proceed to awaiting deposit
       await roomService.updateRoomStep(roomId, ROOM_STEPS.AWAITING_DEPOSIT);
 
-      // For now, use a placeholder escrow address
-      // In production, this would be generated or assigned
-      const escrowAddress = "0x" + "0".repeat(40); // Placeholder
+      // Generate escrow address using blockchain service
+      // In production, this would deploy a contract or derive an address
+      const escrowAddress = blockchainService.generateEscrowAddress(roomId, room.chainId);
       await roomService.setEscrowAddress(roomId, escrowAddress);
 
       const depositMsg = BOT_MESSAGES.AWAITING_DEPOSIT(
@@ -683,5 +684,165 @@ export const botService = {
     const receiver = participants.find((p) => p.role === ROLES.RECEIVER);
 
     return { room, participants, sender, receiver };
+  },
+
+  /**
+   * Handle deposit detection
+   * Called when blockchain monitoring detects a deposit to the escrow address
+   */
+  async onDepositDetected(
+    roomId: string,
+    txHash: string,
+    amount?: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      return { ok: false, error: "Room not found" };
+    }
+
+    if (room.step !== ROOM_STEPS.AWAITING_DEPOSIT) {
+      return { ok: false, error: "Room is not awaiting deposit" };
+    }
+
+    if (!room.escrowAddress) {
+      return { ok: false, error: "No escrow address set" };
+    }
+
+    // Store the deposit transaction hash
+    await roomService.setDepositTxHash(roomId, txHash);
+
+    // Transition to FUNDED state
+    await roomService.updateRoomStep(roomId, ROOM_STEPS.FUNDED);
+
+    // Get the deposit amount (use room amount if not provided)
+    const depositAmount = amount || room.amount || "0";
+
+    // Send deposit received message
+    const msg = BOT_MESSAGES.DEPOSIT_RECEIVED(formatUsdtAmount(depositAmount), txHash);
+    await this.sendBotMessage(roomId, msg.text, msg.metadata);
+
+    await roomService.updateLastActivity(roomId);
+
+    return { ok: true };
+  },
+
+  /**
+   * Mock a deposit for testing purposes
+   * This simulates receiving a deposit without actual blockchain interaction
+   */
+  async mockDeposit(
+    roomId: string
+  ): Promise<{ ok: boolean; txHash?: string; error?: string }> {
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      return { ok: false, error: "Room not found" };
+    }
+
+    if (room.step !== ROOM_STEPS.AWAITING_DEPOSIT) {
+      return { ok: false, error: "Room is not awaiting deposit" };
+    }
+
+    if (!room.escrowAddress || !room.amount || !room.feePayer) {
+      return { ok: false, error: "Room not properly configured for deposit" };
+    }
+
+    // Calculate expected deposit amount
+    const fee = calculateFee(room.amount);
+    const depositAmount = calculateDepositAmount(room.amount, fee, room.feePayer as FeePayer);
+
+    // Create mock deposit via blockchain service
+    const { txHash } = await blockchainService.mockDeposit(
+      room.escrowAddress,
+      depositAmount
+    );
+
+    // Process the deposit
+    const result = await this.onDepositDetected(roomId, txHash, depositAmount);
+    if (!result.ok) {
+      return result;
+    }
+
+    return { ok: true, txHash };
+  },
+
+  /**
+   * Check for pending deposits on a room
+   * In production, this would query the blockchain
+   */
+  async checkForDeposit(
+    roomId: string
+  ): Promise<{ ok: boolean; found: boolean; txHash?: string; error?: string }> {
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      return { ok: false, found: false, error: "Room not found" };
+    }
+
+    if (room.step !== ROOM_STEPS.AWAITING_DEPOSIT) {
+      return { ok: false, found: false, error: "Room is not awaiting deposit" };
+    }
+
+    if (!room.escrowAddress || !room.amount || !room.feePayer) {
+      return { ok: false, found: false, error: "Room not properly configured" };
+    }
+
+    // Calculate expected deposit amount
+    const fee = calculateFee(room.amount);
+    const expectedAmount = calculateDepositAmount(room.amount, fee, room.feePayer as FeePayer);
+
+    // Check for deposit via blockchain service
+    const depositInfo = await blockchainService.checkDeposit(
+      room.escrowAddress,
+      expectedAmount,
+      room.chainId
+    );
+
+    if (!depositInfo.found) {
+      return { ok: true, found: false };
+    }
+
+    // Process the deposit
+    const result = await this.onDepositDetected(
+      roomId,
+      depositInfo.txHash!,
+      depositInfo.amount
+    );
+
+    if (!result.ok) {
+      return { ok: false, found: true, error: result.error };
+    }
+
+    return { ok: true, found: true, txHash: depositInfo.txHash };
+  },
+
+  /**
+   * Get deposit info for a room
+   */
+  async getDepositInfo(roomId: string): Promise<{
+    escrowAddress: string | null;
+    expectedAmount: string | null;
+    depositTxHash: string | null;
+    chainName: string;
+    explorerUrl: string | null;
+  } | null> {
+    const room = await roomService.getRoomById(roomId);
+    if (!room) return null;
+
+    const chainConfig = getChainConfig(room.chainId);
+
+    let expectedAmount: string | null = null;
+    if (room.amount && room.feePayer) {
+      const fee = calculateFee(room.amount);
+      expectedAmount = calculateDepositAmount(room.amount, fee, room.feePayer as FeePayer);
+    }
+
+    return {
+      escrowAddress: room.escrowAddress,
+      expectedAmount: expectedAmount ? formatUsdtAmount(expectedAmount) : null,
+      depositTxHash: room.depositTxHash,
+      chainName: chainConfig?.name || `Chain ${room.chainId}`,
+      explorerUrl: room.escrowAddress
+        ? blockchainService.getExplorerAddressUrl(room.chainId, room.escrowAddress)
+        : null,
+    };
   },
 };
