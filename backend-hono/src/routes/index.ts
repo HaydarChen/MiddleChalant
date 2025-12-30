@@ -51,9 +51,14 @@ apiRouter.get(
 
 apiRouter.on(["POST", "GET"], "/auth/*", (c) => auth.handler(c.req.raw));
 
+// ============ Chain Routes ============
+
+apiRouter.get("/chains", roomController.getSupportedChains);
+
 // ============ Room Routes (all require auth) ============
 
 apiRouter.get("/rooms", requireAuth, roomController.getAll);
+apiRouter.get("/rooms/my", requireAuth, roomController.getMyRooms);
 apiRouter.post("/rooms", requireAuth, zValidator("json", createRoomSchema), roomController.create);
 apiRouter.post("/rooms/join", requireAuth, zValidator("json", joinRoomByCodeSchema), roomController.joinByCode);
 apiRouter.get("/rooms/code/:roomCode", requireAuth, roomController.getByCode);

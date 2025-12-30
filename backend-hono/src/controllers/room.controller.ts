@@ -3,8 +3,22 @@ import { roomService } from "@/services";
 import { NotFoundError, BadRequestError } from "@/middlewares";
 import { getUser } from "@/middlewares/auth.middleware";
 import type { CreateRoomRequest, JoinRoomByCodeRequest } from "@/types";
+import { SUPPORTED_CHAINS } from "@/config/chains";
 
 export const roomController = {
+  /**
+   * GET /chains
+   * Get supported chains for room creation
+   */
+  async getSupportedChains(c: Context) {
+    const chains = Object.values(SUPPORTED_CHAINS).map((chain) => ({
+      id: chain.id,
+      name: chain.name,
+      shortName: chain.shortName,
+    }));
+    return c.json({ ok: true, data: chains });
+  },
+
   /**
    * GET /rooms
    * Get all rooms
@@ -13,6 +27,25 @@ export const roomController = {
     const limit = Number(c.req.query("limit") ?? 50);
     const rooms = await roomService.getAllRooms(limit);
     return c.json({ ok: true, data: rooms });
+  },
+
+  /**
+   * GET /rooms/my
+   * Get current user's rooms
+   */
+  async getMyRooms(c: Context) {
+    const user = getUser(c)!;
+    const rooms = await roomService.getRoomsByUserId(user.id);
+
+    // Fetch participants for each room
+    const roomsWithParticipants = await Promise.all(
+      rooms.map(async (room) => {
+        const participants = await roomService.getRoomParticipants(room.id);
+        return { ...room, participants };
+      })
+    );
+
+    return c.json({ ok: true, data: roomsWithParticipants });
   },
 
   /**

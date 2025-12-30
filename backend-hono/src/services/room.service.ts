@@ -17,6 +17,26 @@ export const roomService = {
     return roomRepository.findByCode(roomCode);
   },
 
+  async getRoomsByUserId(userId: string): Promise<Room[]> {
+    // Get all rooms where user is a participant
+    const participations = await participantRepository.findByUserId(userId);
+    const roomIds = participations.map((p) => p.roomId);
+
+    if (roomIds.length === 0) return [];
+
+    // Fetch all rooms
+    const rooms: Room[] = [];
+    for (const roomId of roomIds) {
+      const room = await roomRepository.findById(roomId);
+      if (room) rooms.push(room);
+    }
+
+    // Sort by createdAt descending
+    return rooms.sort((a, b) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  },
+
   async createRoom(data: CreateRoomRequest, creatorId: string): Promise<Room> {
     // Validate chain is supported
     if (!isChainSupported(data.chainId)) {
@@ -29,7 +49,22 @@ export const roomService = {
     }
 
     const roomId = generateId("room");
-    const roomCode = generateRoomCode();
+
+    // Generate unique room code with collision retry
+    let roomCode = generateRoomCode();
+    let attempts = 0;
+    const maxAttempts = 5;
+
+    while (attempts < maxAttempts) {
+      const existing = await roomRepository.findByCode(roomCode);
+      if (!existing) break;
+      roomCode = generateRoomCode();
+      attempts++;
+    }
+
+    if (attempts >= maxAttempts) {
+      throw new Error("Failed to generate unique room code");
+    }
 
     return roomRepository.create({
       id: roomId,
