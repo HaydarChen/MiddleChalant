@@ -245,6 +245,27 @@ const BOT_MESSAGES = {
       `The deal has been cancelled and funds have been refunded. This room will be archived.`,
     metadata: { action: "deal_cancelled" } as BotMessageMetadata,
   }),
+
+  // Timeout messages
+  ROOM_EXPIRED_PRE_FUNDING: () => ({
+    text: `**Room Expired**\n\n` +
+      `This room has been inactive for too long and has expired.\n\n` +
+      `No funds were deposited, so no action is needed.`,
+    metadata: { action: "room_expired" } as BotMessageMetadata,
+  }),
+
+  ROOM_EXPIRED_AWAITING_DEPOSIT: () => ({
+    text: `**Room Expired - Deposit Timeout**\n\n` +
+      `The deposit was not received within the time limit.\n\n` +
+      `This room has been closed. Please create a new room to try again.`,
+    metadata: { action: "room_expired_deposit" } as BotMessageMetadata,
+  }),
+
+  TIMEOUT_WARNING: (minutesRemaining: number) => ({
+    text: `⚠️ **Timeout Warning**\n\n` +
+      `This room will expire in **${minutesRemaining} minutes** if no action is taken.`,
+    metadata: { action: "timeout_warning", data: { minutesRemaining } } as BotMessageMetadata,
+  }),
 };
 
 // ============ Helper Functions ============

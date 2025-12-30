@@ -4,7 +4,7 @@ import { z } from "zod";
 import { apiReference } from "@scalar/hono-api-reference";
 import { auth } from "@/lib/auth";
 import { openApiDoc } from "@/lib/openapi";
-import { roomController, messageController, escrowController, botController } from "@/controllers";
+import { roomController, messageController, escrowController, botController, schedulerController } from "@/controllers";
 import { requireAuth } from "@/middlewares";
 import { getSupportedChainIds } from "@/config/chains";
 
@@ -125,3 +125,12 @@ apiRouter.post("/rooms/:roomId/actions/change-refund-address", requireAuth, botC
 
 apiRouter.get("/escrows/by-address", escrowController.getByAddress);
 apiRouter.get("/escrows/:chainId/:escrowAddress", escrowController.getByChainAndAddress);
+
+// ============ Scheduler Routes (for cron jobs) ============
+// Note: In production, these should be protected (API key, internal network, etc.)
+
+apiRouter.post("/scheduler/check-timeouts", schedulerController.checkTimeouts);
+apiRouter.post("/scheduler/send-warnings", schedulerController.sendWarnings);
+apiRouter.get("/scheduler/config", schedulerController.getConfig);
+apiRouter.get("/scheduler/expiring-soon", schedulerController.getExpiringSoon);
+apiRouter.get("/rooms/:roomId/timeout-status", requireAuth, schedulerController.getRoomTimeoutStatus);
