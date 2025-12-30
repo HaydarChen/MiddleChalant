@@ -9,6 +9,9 @@
     "deploy:local": "hardhat run scripts/deployFactory.ts --network localhost",
     "deploy:sepolia": "hardhat run scripts/deployFactory.ts --network sepolia",
     "deploy:bscTestnet": "hardhat run scripts/deployFactory.ts --network bscTestnet",
+    "deploy:master:local": "hardhat run scripts/deployMasterEscrow.ts --network localhost",
+    "deploy:master:sepolia": "hardhat run scripts/deployMasterEscrow.ts --network sepolia",
+    "deploy:master:bscTestnet": "hardhat run scripts/deployMasterEscrow.ts --network bscTestnet",
     "export:abi": "ts-node scripts/exportAbi.ts",
     "create:escrow": "hardhat run scripts/createEscrow.ts --network localhost"
   },
