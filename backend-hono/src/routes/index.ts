@@ -113,6 +113,14 @@ apiRouter.post("/rooms/:roomId/actions/submit-payout-address", requireAuth, zVal
 apiRouter.post("/rooms/:roomId/actions/confirm-payout-address", requireAuth, botController.confirmPayoutAddress);
 apiRouter.post("/rooms/:roomId/actions/change-payout-address", requireAuth, botController.changePayoutAddress);
 
+// Cancel/Refund Flow Routes
+apiRouter.post("/rooms/:roomId/actions/initiate-cancel", requireAuth, botController.initiateCancel);
+apiRouter.post("/rooms/:roomId/actions/confirm-cancel", requireAuth, botController.confirmCancel);
+apiRouter.post("/rooms/:roomId/actions/reject-cancel", requireAuth, botController.rejectCancel);
+apiRouter.post("/rooms/:roomId/actions/submit-refund-address", requireAuth, zValidator("json", z.object({ address: z.string().min(1) })), botController.submitRefundAddress);
+apiRouter.post("/rooms/:roomId/actions/confirm-refund-address", requireAuth, botController.confirmRefundAddress);
+apiRouter.post("/rooms/:roomId/actions/change-refund-address", requireAuth, botController.changeRefundAddress);
+
 // ============ Escrow Routes ============
 
 apiRouter.get("/escrows/by-address", escrowController.getByAddress);

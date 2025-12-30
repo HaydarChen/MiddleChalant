@@ -404,4 +404,155 @@ export const botController = {
 
     return c.json({ ok: true });
   },
+
+  // ============ Cancel/Refund Flow ============
+
+  /**
+   * POST /rooms/:roomId/actions/initiate-cancel
+   * Either party initiates cancellation and refund
+   */
+  async initiateCancel(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onCancelInitiated(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/confirm-cancel
+   * Confirm cancellation (both parties must confirm)
+   */
+  async confirmCancel(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onCancelConfirmed(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/reject-cancel
+   * Reject the cancellation request (go back to FUNDED state)
+   */
+  async rejectCancel(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onCancelRejected(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/submit-refund-address
+   * Sender submits their wallet address to receive refund
+   */
+  async submitRefundAddress(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+    const body = await c.req.json<SetPayoutAddressRequest>();
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    if (!body.address) {
+      throw new BadRequestError("Address is required");
+    }
+
+    const result = await botService.onRefundAddressSubmitted(room, user.id, body.address);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/confirm-refund-address
+   * Sender confirms their refund address and triggers refund
+   */
+  async confirmRefundAddress(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onRefundAddressConfirmed(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/change-refund-address
+   * Sender wants to change their refund address
+   */
+  async changeRefundAddress(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onRefundAddressRejected(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
 };

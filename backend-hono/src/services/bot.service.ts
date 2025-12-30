@@ -1088,4 +1088,239 @@ export const botService = {
 
     return { ok: true };
   },
+
+  // ============ Cancel/Refund Flow ============
+
+  /**
+   * Initiate cancel (either party can initiate from FUNDED state)
+   */
+  async onCancelInitiated(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (room.step !== ROOM_STEPS.FUNDED) {
+      return { ok: false, error: "Room is not in funded state" };
+    }
+
+    // Mark initiator as confirmed for cancel
+    await participantRepository.update(participant.id, { cancelConfirmed: true });
+
+    // Transition to CANCELLING state
+    await roomService.updateRoomStep(room.id, ROOM_STEPS.CANCELLING);
+
+    const userName = await getUserName(userId);
+    const msg = BOT_MESSAGES.CANCEL_REQUESTED(userName);
+    await this.sendBotMessage(room.id, msg.text, msg.metadata);
+
+    return { ok: true };
+  },
+
+  /**
+   * Confirm cancel (other party confirms cancellation)
+   */
+  async onCancelConfirmed(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (room.step !== ROOM_STEPS.CANCELLING) {
+      return { ok: false, error: "Room is not in cancelling state" };
+    }
+
+    // Mark participant as confirmed
+    await participantRepository.update(participant.id, { cancelConfirmed: true });
+
+    const userName = await getUserName(userId);
+
+    // Check if both confirmed
+    const participants = await roomService.getRoomParticipants(room.id);
+    const allConfirmed = participants.every((p) => p.cancelConfirmed);
+
+    if (allConfirmed) {
+      // Both confirmed - ask sender for refund address
+      const sender = participants.find((p) => p.role === ROLES.SENDER)!;
+      const senderName = await getUserName(sender.userId);
+
+      const addressMsg = BOT_MESSAGES.REQUEST_REFUND_ADDRESS(senderName);
+      await this.sendBotMessage(room.id, addressMsg.text, addressMsg.metadata);
+    } else {
+      // Just send confirmation message
+      await this.sendBotMessage(room.id, `**${userName}** confirmed the cancellation.`);
+    }
+
+    return { ok: true };
+  },
+
+  /**
+   * Reject cancel request (go back to FUNDED)
+   */
+  async onCancelRejected(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (room.step !== ROOM_STEPS.CANCELLING) {
+      return { ok: false, error: "Room is not in cancelling state" };
+    }
+
+    // Reset cancel confirmations
+    const participants = await roomService.getRoomParticipants(room.id);
+    for (const p of participants) {
+      await participantRepository.update(p.id, { cancelConfirmed: false });
+    }
+
+    // Go back to FUNDED state
+    await roomService.updateRoomStep(room.id, ROOM_STEPS.FUNDED);
+
+    const userName = await getUserName(userId);
+    await this.sendBotMessage(
+      room.id,
+      `**${userName}** rejected the cancellation request. The funds remain in escrow.`
+    );
+
+    // Re-show the release/cancel buttons
+    const depositAmount = room.amount ? formatUsdtAmount(room.amount) : "0";
+    const msg = BOT_MESSAGES.DEPOSIT_RECEIVED(depositAmount, room.depositTxHash || "");
+    await this.sendBotMessage(room.id, "You can still release or cancel the deal:", msg.metadata);
+
+    return { ok: true };
+  },
+
+  /**
+   * Submit refund address (sender only)
+   */
+  async onRefundAddressSubmitted(
+    room: Room,
+    userId: string,
+    address: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (room.step !== ROOM_STEPS.CANCELLING) {
+      return { ok: false, error: "Room is not in cancelling state" };
+    }
+
+    // Only sender can submit refund address
+    if (participant.role !== ROLES.SENDER) {
+      return { ok: false, error: "Only the sender can provide refund address" };
+    }
+
+    // Validate address format
+    if (!blockchainService.isValidAddress(address)) {
+      return { ok: false, error: "Invalid wallet address format" };
+    }
+
+    // Store the address temporarily
+    await participantRepository.update(participant.id, { payoutAddress: address });
+
+    // Ask for confirmation (reusing the same message template)
+    const confirmMsg = BOT_MESSAGES.CONFIRM_PAYOUT_ADDRESS(address);
+    await this.sendBotMessage(room.id, confirmMsg.text, confirmMsg.metadata);
+
+    return { ok: true };
+  },
+
+  /**
+   * Confirm refund address and execute refund
+   */
+  async onRefundAddressConfirmed(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (room.step !== ROOM_STEPS.CANCELLING) {
+      return { ok: false, error: "Room is not in cancelling state" };
+    }
+
+    if (participant.role !== ROLES.SENDER) {
+      return { ok: false, error: "Only the sender can confirm refund address" };
+    }
+
+    if (!participant.payoutAddress) {
+      return { ok: false, error: "No refund address set" };
+    }
+
+    if (!room.escrowAddress || !room.amount || !room.feePayer) {
+      return { ok: false, error: "Room not properly configured" };
+    }
+
+    // Calculate refund amount (deposit amount - sender gets back what they deposited)
+    const fee = calculateFee(room.amount);
+    const depositAmount = calculateDepositAmount(room.amount, fee, room.feePayer as FeePayer);
+
+    // Execute the refund
+    const result = await blockchainService.executeRefund(
+      room.escrowAddress,
+      participant.payoutAddress,
+      depositAmount,
+      room.chainId
+    );
+
+    if (!result.success) {
+      return { ok: false, error: result.error || "Failed to execute refund" };
+    }
+
+    // Store release tx hash (same field for refund)
+    await roomService.setReleaseTxHash(room.id, result.txHash!);
+
+    // Update room status
+    await roomService.updateRoomStep(room.id, ROOM_STEPS.CANCELLED);
+    await roomService.updateRoomStatus(room.id, ROOM_STATUSES.CANCELLED);
+
+    // Send success messages
+    const senderName = await getUserName(userId);
+    const refundMsg = BOT_MESSAGES.PAYMENT_REFUNDED(
+      senderName,
+      formatUsdtAmount(depositAmount),
+      result.txHash!
+    );
+    await this.sendBotMessage(room.id, refundMsg.text, refundMsg.metadata);
+
+    const cancelMsg = BOT_MESSAGES.DEAL_CANCELLED();
+    await this.sendBotMessage(room.id, cancelMsg.text, cancelMsg.metadata);
+
+    return { ok: true };
+  },
+
+  /**
+   * Change refund address (go back to address input)
+   */
+  async onRefundAddressRejected(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (participant.role !== ROLES.SENDER) {
+      return { ok: false, error: "Only the sender can change refund address" };
+    }
+
+    // Clear the address
+    await participantRepository.update(participant.id, { payoutAddress: null });
+
+    // Ask for address again
+    const senderName = await getUserName(userId);
+    const addressMsg = BOT_MESSAGES.REQUEST_REFUND_ADDRESS(senderName);
+    await this.sendBotMessage(room.id, addressMsg.text, addressMsg.metadata);
+
+    return { ok: true };
+  },
 };
