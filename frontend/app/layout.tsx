@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Plus_Jakarta_Sans } from "next/font/google";
+import { AppProviders } from "./providers";
 import "./globals.css";
 
 const plusJakarta = Plus_Jakarta_Sans({
@@ -102,7 +103,9 @@ export default function RootLayout({
         />
 
         {/* Content */}
-        <div className="relative min-h-screen">{children}</div>
+        <div className="relative min-h-screen">
+          <AppProviders>{children}</AppProviders>
+        </div>
       </body>
     </html>
   );

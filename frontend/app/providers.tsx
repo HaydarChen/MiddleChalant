@@ -1,13 +1,16 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { Web3Provider } from '@/components/providers/Web3Provider';
+import { AuthProvider } from '@/lib/auth-context';
 
 interface AppProvidersProps {
   children: ReactNode;
 }
 
 export function AppProviders({ children }: AppProvidersProps) {
-  return <Web3Provider>{children}</Web3Provider>;
+  return (
+    <AuthProvider>
+      {children}
+    </AuthProvider>
+  );
 }
-

@@ -1,233 +1,946 @@
-import { notFound } from "next/navigation";
-import { GlassPanel } from "@/components/glass-panel";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+"use client";
+
+import { useEffect, useState, useRef, useCallback } from "react";
+import { useParams, useRouter } from "next/navigation";
 import {
+  ArrowLeft,
   ArrowDownRight,
   ArrowUpRight,
-  CornerDownLeft,
   Lock,
+  Loader2,
+  Send,
+  Copy,
+  Check,
+  ExternalLink,
+  AlertTriangle,
+  Clock,
+  Users,
+  Bot,
+  RefreshCw,
 } from "lucide-react";
+import Link from "next/link";
+import { GlassCard } from "@/components/glass-card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { useRequireAuth } from "@/lib/auth-context";
+import { roomsApi, messagesApi, botActionsApi, chainsApi } from "@/lib/api";
+import type {
+  Room,
+  Participant,
+  Message,
+  BotMessageMetadata,
+  ChainConfig,
+  DepositInfo,
+  Role,
+  FeePayer,
+} from "@/lib/types";
+import { ROOM_STEPS, ROOM_STATUSES, ROLES, FEE_PAYERS } from "@/lib/types";
 
-const dummyRoomById = {
-  "design-bounty": {
-    id: "design-bounty",
-    title: "Design bounty / Q4 launch",
-    summary: "Milestone-based design escrow between Founder DAO and Studio Orbit.",
-  },
-  "audit-escrow": {
-    id: "audit-escrow",
-    title: "Protocol audit escrow",
-    summary: "USDC escrow for a protocol security review.",
-  },
-} as const;
+// ============ Helper Functions ============
 
-interface RoomDetailPageProps {
-  params: { roomId: string };
+function getRoomStepInfo(step: string) {
+  switch (step) {
+    case ROOM_STEPS.WAITING_FOR_PEER:
+      return { label: "Waiting for peer", progress: 1, color: "amber" };
+    case ROOM_STEPS.ROLE_SELECTION:
+      return { label: "Role Selection", progress: 2, color: "sky" };
+    case ROOM_STEPS.AMOUNT_AGREEMENT:
+      return { label: "Amount Agreement", progress: 3, color: "sky" };
+    case ROOM_STEPS.FEE_SELECTION:
+      return { label: "Fee Selection", progress: 4, color: "sky" };
+    case ROOM_STEPS.AWAITING_DEPOSIT:
+      return { label: "Awaiting Deposit", progress: 5, color: "amber" };
+    case ROOM_STEPS.FUNDED:
+      return { label: "Funded", progress: 6, color: "emerald" };
+    case ROOM_STEPS.RELEASING:
+      return { label: "Releasing", progress: 7, color: "sky" };
+    case ROOM_STEPS.CANCELLING:
+      return { label: "Cancelling", progress: 7, color: "amber" };
+    default:
+      return { label: step, progress: 0, color: "slate" };
+  }
 }
 
-export default function RoomDetailPage({ params }: RoomDetailPageProps) {
-  const room = dummyRoomById[params.roomId as keyof typeof dummyRoomById];
+function formatAmount(amount: string | undefined): string {
+  if (!amount) return "0.00";
+  const num = Number(amount) / 1e6;
+  return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+}
 
-  if (!room) {
-    notFound();
+function formatTimeAgo(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function shortenAddress(address: string): string {
+  if (!address) return "";
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+// ============ Main Component ============
+
+export default function RoomDetailPage() {
+  const params = useParams();
+  const router = useRouter();
+  const roomId = params.roomId as string;
+
+  const { user, isLoading: authLoading } = useRequireAuth();
+
+  const [room, setRoom] = useState<Room | null>(null);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [chain, setChain] = useState<ChainConfig | null>(null);
+  const [depositInfo, setDepositInfo] = useState<DepositInfo | null>(null);
+
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [messageInput, setMessageInput] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [copiedAddress, setCopiedAddress] = useState(false);
+
+  // Input states for various flows
+  const [amountInput, setAmountInput] = useState("");
+  const [addressInput, setAddressInput] = useState("");
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Current user's participant data
+  const currentParticipant = participants.find((p) => p.userId === user?.id);
+  const otherParticipant = participants.find((p) => p.userId !== user?.id);
+
+  // ============ Data Fetching ============
+
+  const fetchRoomData = useCallback(async () => {
+    try {
+      const [roomData, participantsData, chainsData] = await Promise.all([
+        roomsApi.getRoomById(roomId),
+        roomsApi.getParticipants(roomId),
+        chainsApi.getChains(),
+      ]);
+
+      setRoom(roomData);
+      setParticipants(participantsData);
+
+      const chainConfig = chainsData.find((c) => c.chainId === roomData.chainId);
+      setChain(chainConfig || null);
+
+      // Fetch deposit info if in deposit/funded stage
+      if (
+        roomData.step === ROOM_STEPS.AWAITING_DEPOSIT ||
+        roomData.step === ROOM_STEPS.FUNDED ||
+        roomData.step === ROOM_STEPS.RELEASING ||
+        roomData.step === ROOM_STEPS.CANCELLING
+      ) {
+        const depInfo = await roomsApi.getDepositInfo(roomId);
+        setDepositInfo(depInfo);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load room");
+    }
+  }, [roomId]);
+
+  const fetchMessages = useCallback(async () => {
+    try {
+      const messagesData = await messagesApi.getMessages(roomId);
+      setMessages(messagesData.reverse());
+    } catch (err) {
+      console.error("Failed to fetch messages:", err);
+    }
+  }, [roomId]);
+
+  // Initial load
+  useEffect(() => {
+    if (!user) return;
+
+    const loadData = async () => {
+      setIsLoading(true);
+      await Promise.all([fetchRoomData(), fetchMessages()]);
+      setIsLoading(false);
+    };
+
+    loadData();
+  }, [user, fetchRoomData, fetchMessages]);
+
+  // Polling for updates
+  useEffect(() => {
+    if (!user || !room) return;
+
+    // Only poll if room is active
+    if (room.status !== ROOM_STATUSES.OPEN) return;
+
+    const interval = setInterval(() => {
+      fetchRoomData();
+      fetchMessages();
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [user, room, fetchRoomData, fetchMessages]);
+
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // ============ Actions ============
+
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!messageInput.trim() || isSending) return;
+
+    setIsSending(true);
+    try {
+      await messagesApi.sendMessage(roomId, { text: messageInput });
+      setMessageInput("");
+      await fetchMessages();
+    } catch (err) {
+      console.error("Failed to send message:", err);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleAction = async (action: string, data?: unknown) => {
+    setActionLoading(action);
+    try {
+      switch (action) {
+        case "select-role-sender":
+          await botActionsApi.selectRole(roomId, ROLES.SENDER);
+          break;
+        case "select-role-receiver":
+          await botActionsApi.selectRole(roomId, ROLES.RECEIVER);
+          break;
+        case "reset-roles":
+          await botActionsApi.resetRoles(roomId);
+          break;
+        case "propose-amount":
+          if (amountInput) {
+            const amountInMinor = (parseFloat(amountInput) * 1e6).toString();
+            await botActionsApi.proposeAmount(roomId, amountInMinor);
+            setAmountInput("");
+          }
+          break;
+        case "confirm-amount":
+          await botActionsApi.confirmAmount(roomId, true);
+          break;
+        case "reject-amount":
+          await botActionsApi.confirmAmount(roomId, false);
+          break;
+        case "select-fee-sender":
+          await botActionsApi.selectFeePayer(roomId, FEE_PAYERS.SENDER);
+          break;
+        case "select-fee-receiver":
+          await botActionsApi.selectFeePayer(roomId, FEE_PAYERS.RECEIVER);
+          break;
+        case "select-fee-split":
+          await botActionsApi.selectFeePayer(roomId, FEE_PAYERS.SPLIT);
+          break;
+        case "confirm-fee":
+          await botActionsApi.confirmFee(roomId);
+          break;
+        case "check-deposit":
+          await botActionsApi.checkDeposit(roomId);
+          break;
+        case "mock-deposit":
+          await botActionsApi.mockDeposit(roomId);
+          break;
+        case "initiate-release":
+          await botActionsApi.initiateRelease(roomId);
+          break;
+        case "confirm-release":
+          await botActionsApi.confirmRelease(roomId);
+          break;
+        case "cancel-release":
+          await botActionsApi.cancelRelease(roomId);
+          break;
+        case "submit-payout-address":
+          if (addressInput) {
+            await botActionsApi.submitPayoutAddress(roomId, addressInput);
+            setAddressInput("");
+          }
+          break;
+        case "confirm-payout-address":
+          await botActionsApi.confirmPayoutAddress(roomId);
+          break;
+        case "change-payout-address":
+          await botActionsApi.changePayoutAddress(roomId);
+          break;
+        case "initiate-cancel":
+          await botActionsApi.initiateCancel(roomId);
+          break;
+        case "confirm-cancel":
+          await botActionsApi.confirmCancel(roomId);
+          break;
+        case "reject-cancel":
+          await botActionsApi.rejectCancel(roomId);
+          break;
+        case "submit-refund-address":
+          if (addressInput) {
+            await botActionsApi.submitRefundAddress(roomId, addressInput);
+            setAddressInput("");
+          }
+          break;
+        case "confirm-refund-address":
+          await botActionsApi.confirmRefundAddress(roomId);
+          break;
+        case "change-refund-address":
+          await botActionsApi.changeRefundAddress(roomId);
+          break;
+      }
+
+      await Promise.all([fetchRoomData(), fetchMessages()]);
+    } catch (err) {
+      console.error("Action failed:", err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const copyToClipboard = async (text: string) => {
+    await navigator.clipboard.writeText(text);
+    setCopiedAddress(true);
+    setTimeout(() => setCopiedAddress(false), 2000);
+  };
+
+  // ============ Loading State ============
+
+  if (authLoading || isLoading) {
+    return (
+      <div className="flex h-[50vh] items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
+      </div>
+    );
   }
 
-  return (
-    <div className="mx-auto flex max-w-3xl flex-1 flex-col gap-4">
-      <section className="space-y-4">
-        <header>
-          <h1 className="text-lg font-semibold text-slate-50">
-            {room.title}
-          </h1>
-          <p className="mt-1 text-xs text-slate-400">{room.summary}</p>
-        </header>
-
-        <GlassPanel className="flex h-[420px] flex-col border border-slate-800/80 p-4 hover-glow hover-lift">
-          <div className="mb-2 flex items-center justify-between text-xs text-slate-400">
-            <span>Room chat</span>
-            <span className="rounded-full bg-black/80 px-2 py-1 text-[11px]">
-              2 participants
-            </span>
-          </div>
-          <div className="flex-1 space-y-2 overflow-y-auto pr-1 text-xs">
-            <ChatBubble
-              author="You"
-              role="Mediator"
-              alignment="right"
-              tone="neutral"
-            >
-              Funds are locked. Let&apos;s confirm final deliverables before
-              releasing escrow.
-            </ChatBubble>
-            <ChatBubble
-              author="Studio Orbit"
-              role="Provider"
-              alignment="left"
-              tone="positive"
-            >
-              All design files and source assets are uploaded. Happy to walk
-              through anything live.
-            </ChatBubble>
-            <ChatBubble
-              author="Founder DAO"
-              role="Client"
-              alignment="left"
-              tone="neutral"
-            >
-              Reviewing now. If everything matches the brief we can release in
-              this room.
-            </ChatBubble>
-          </div>
-          <form className="mt-3 flex items-center gap-2 text-xs">
-            <Input
-              placeholder="Send a message to keep everyone aligned…"
-              className="h-9 bg-black/80 text-xs"
-            />
-            <Button
-              type="submit"
-              size="sm"
-              className="h-9 rounded-full px-3 text-xs"
-            >
-              <CornerDownLeft className="mr-1 h-3 w-3" />
-              Send
+  if (error || !room) {
+    return (
+      <div className="mx-auto max-w-3xl">
+        <GlassCard className="border border-red-500/30 p-8 text-center">
+          <AlertTriangle className="mx-auto h-12 w-12 text-red-400" />
+          <h2 className="mt-4 text-lg font-semibold text-slate-50">
+            {error || "Room not found"}
+          </h2>
+          <Link href="/rooms">
+            <Button variant="outline" className="mt-4">
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back to Rooms
             </Button>
-          </form>
-        </GlassPanel>
-      </section>
+          </Link>
+        </GlassCard>
+      </div>
+    );
+  }
 
-      <section className="mt-2 flex w-full flex-col gap-4">
-        <GlassPanel className="border border-slate-800/80 p-4 hover-glow hover-lift">
-          <div className="mb-3 flex items-center justify-between text-xs">
-            <span className="font-medium text-slate-200">Escrow state</span>
-            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-300">
-              <Lock className="h-3 w-3" />
-              Funds locked
-            </span>
-          </div>
-          <ol className="grid grid-cols-3 gap-2 text-[11px] text-slate-300">
-            <EscrowStep
-              label="Awaiting deposit"
-              state="done"
-              icon={<ArrowDownRight className="h-3 w-3" />}
-            />
-            <EscrowStep
-              label="Funded"
-              state="current"
-              icon={<Lock className="h-3 w-3" />}
-            />
-            <EscrowStep
-              label="Release / refund"
-              state="upcoming"
-              icon={<ArrowUpRight className="h-3 w-3" />}
-            />
-          </ol>
-          <p className="mt-3 text-[11px] text-slate-400">
-            Actions here are illustrative only. Smart contract integration will
-            connect to your wallet and submit transactions from this panel.
-          </p>
-        </GlassPanel>
+  const stepInfo = getRoomStepInfo(room.step);
 
-        <GlassPanel className="border border-slate-800/80 p-4 text-xs text-slate-300 hover-glow hover-lift">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="font-medium text-slate-200">Current terms</span>
-            <span className="rounded-full bg-slate-900/80 px-2 py-1 text-[11px] text-slate-400">
-              Static preview
-            </span>
-          </div>
-          <dl className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <dt className="text-slate-400">Amount</dt>
-              <dd className="font-medium text-slate-100">2.5 ETH</dd>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <dt className="text-slate-400">Release condition</dt>
-              <dd className="text-right">
-                Mediator confirms deliverables match agreed scope.
-              </dd>
-            </div>
-          </dl>
-        </GlassPanel>
-      </section>
-    </div>
-  );
-}
-
-interface ChatBubbleProps {
-  author: string;
-  role: string;
-  alignment: "left" | "right";
-  tone: "neutral" | "positive";
-  children: React.ReactNode;
-}
-
-function ChatBubble({
-  author,
-  role,
-  alignment,
-  tone,
-  children,
-}: ChatBubbleProps) {
-  const isRight = alignment === "right";
+  // ============ Render ============
 
   return (
-    <div
-      className={`flex ${isRight ? "justify-end" : "justify-start"} text-[11px]`}
-    >
-      <div
-        className={`max-w-[80%] rounded-xl px-3 py-2 ${
-          isRight
-            ? "bg-gradient-to-br from-accent-blue to-accent-green text-slate-950"
-            : "bg-black/80 text-slate-100 border border-slate-800/80"
-        }`}
-      >
-        <div className="mb-0.5 flex items-center gap-2 text-[10px]">
-          <span className="font-semibold">{author}</span>
-          <span className="rounded-full bg-black/60 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.18em] text-slate-300">
-            {role}
-          </span>
+    <div className="mx-auto max-w-5xl space-y-6">
+      {/* Header */}
+      <header className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-3">
+            <Link href="/rooms">
+              <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+            </Link>
+            <div>
+              <h1 className="text-xl font-semibold text-slate-50">{room.name}</h1>
+              <div className="mt-1 flex items-center gap-3 text-xs text-slate-400">
+                <span className="font-mono">{room.roomCode}</span>
+                <span>{chain?.name || `Chain ${room.chainId}`}</span>
+                <span className="flex items-center gap-1">
+                  <Users className="h-3 w-3" />
+                  {participants.length}/2
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
-        <p className="leading-snug">
-          {children}
-        </p>
-        {tone === "positive" && (
-          <p className="mt-1 text-[10px] text-emerald-300">
-            Looks good from our side.
-          </p>
-        )}
+
+        <div className="flex items-center gap-2">
+          <span
+            className={`rounded-full px-3 py-1 text-xs font-medium bg-${stepInfo.color}-500/10 text-${stepInfo.color}-400`}
+          >
+            {stepInfo.label}
+          </span>
+          {room.status !== ROOM_STATUSES.OPEN && (
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-medium ${
+                room.status === ROOM_STATUSES.COMPLETED
+                  ? "bg-emerald-500/10 text-emerald-400"
+                  : room.status === ROOM_STATUSES.CANCELLED
+                    ? "bg-slate-500/10 text-slate-400"
+                    : "bg-red-500/10 text-red-400"
+              }`}
+            >
+              {room.status}
+            </span>
+          )}
+        </div>
+      </header>
+
+      {/* Main Content Grid */}
+      <div className="grid gap-6 lg:grid-cols-3">
+        {/* Chat Area */}
+        <div className="lg:col-span-2">
+          <GlassCard className="flex h-[600px] flex-col border border-slate-800/80">
+            {/* Chat Header */}
+            <div className="flex items-center justify-between border-b border-slate-800/60 px-4 py-3">
+              <span className="text-sm font-medium text-slate-200">Room Chat</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  fetchRoomData();
+                  fetchMessages();
+                }}
+                className="h-7 px-2 text-xs"
+              >
+                <RefreshCw className="mr-1 h-3 w-3" />
+                Refresh
+              </Button>
+            </div>
+
+            {/* Messages */}
+            <div
+              ref={chatContainerRef}
+              className="flex-1 space-y-3 overflow-y-auto p-4"
+            >
+              {messages.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-sm text-slate-500">
+                  No messages yet. The bot will guide you through the process.
+                </div>
+              ) : (
+                messages.map((message) => (
+                  <MessageBubble
+                    key={message.id}
+                    message={message}
+                    currentUserId={user?.id}
+                    onAction={handleAction}
+                    actionLoading={actionLoading}
+                    amountInput={amountInput}
+                    setAmountInput={setAmountInput}
+                    addressInput={addressInput}
+                    setAddressInput={setAddressInput}
+                    currentParticipant={currentParticipant}
+                    room={room}
+                  />
+                ))
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Message Input */}
+            <form
+              onSubmit={handleSendMessage}
+              className="border-t border-slate-800/60 p-4"
+            >
+              <div className="flex items-center gap-2">
+                <Input
+                  value={messageInput}
+                  onChange={(e) => setMessageInput(e.target.value)}
+                  placeholder="Type a message..."
+                  className="flex-1 bg-slate-900/50"
+                  disabled={isSending || room.status !== ROOM_STATUSES.OPEN}
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={isSending || !messageInput.trim() || room.status !== ROOM_STATUSES.OPEN}
+                >
+                  {isSending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </form>
+          </GlassCard>
+        </div>
+
+        {/* Sidebar */}
+        <div className="space-y-4">
+          {/* Progress Steps */}
+          <GlassCard className="border border-slate-800/80 p-4">
+            <h3 className="mb-3 text-sm font-medium text-slate-200">Progress</h3>
+            <div className="space-y-2">
+              <ProgressStep
+                step={1}
+                label="Peer Joined"
+                isActive={room.step === ROOM_STEPS.WAITING_FOR_PEER}
+                isComplete={
+                  room.step !== ROOM_STEPS.WAITING_FOR_PEER &&
+                  participants.length === 2
+                }
+              />
+              <ProgressStep
+                step={2}
+                label="Roles Selected"
+                isActive={room.step === ROOM_STEPS.ROLE_SELECTION}
+                isComplete={
+                  [
+                    ROOM_STEPS.AMOUNT_AGREEMENT,
+                    ROOM_STEPS.FEE_SELECTION,
+                    ROOM_STEPS.AWAITING_DEPOSIT,
+                    ROOM_STEPS.FUNDED,
+                    ROOM_STEPS.RELEASING,
+                    ROOM_STEPS.CANCELLING,
+                  ].includes(room.step as any)
+                }
+              />
+              <ProgressStep
+                step={3}
+                label="Amount Agreed"
+                isActive={room.step === ROOM_STEPS.AMOUNT_AGREEMENT}
+                isComplete={
+                  [
+                    ROOM_STEPS.FEE_SELECTION,
+                    ROOM_STEPS.AWAITING_DEPOSIT,
+                    ROOM_STEPS.FUNDED,
+                    ROOM_STEPS.RELEASING,
+                    ROOM_STEPS.CANCELLING,
+                  ].includes(room.step as any)
+                }
+              />
+              <ProgressStep
+                step={4}
+                label="Fee Selected"
+                isActive={room.step === ROOM_STEPS.FEE_SELECTION}
+                isComplete={
+                  [
+                    ROOM_STEPS.AWAITING_DEPOSIT,
+                    ROOM_STEPS.FUNDED,
+                    ROOM_STEPS.RELEASING,
+                    ROOM_STEPS.CANCELLING,
+                  ].includes(room.step as any)
+                }
+              />
+              <ProgressStep
+                step={5}
+                label="Deposit Received"
+                isActive={room.step === ROOM_STEPS.AWAITING_DEPOSIT}
+                isComplete={
+                  [ROOM_STEPS.FUNDED, ROOM_STEPS.RELEASING, ROOM_STEPS.CANCELLING].includes(
+                    room.step as any
+                  )
+                }
+              />
+              <ProgressStep
+                step={6}
+                label="Complete"
+                isActive={
+                  room.step === ROOM_STEPS.FUNDED ||
+                  room.step === ROOM_STEPS.RELEASING ||
+                  room.step === ROOM_STEPS.CANCELLING
+                }
+                isComplete={
+                  room.status === ROOM_STATUSES.COMPLETED ||
+                  room.status === ROOM_STATUSES.CANCELLED
+                }
+              />
+            </div>
+          </GlassCard>
+
+          {/* Participants */}
+          <GlassCard className="border border-slate-800/80 p-4">
+            <h3 className="mb-3 text-sm font-medium text-slate-200">
+              Participants
+            </h3>
+            <div className="space-y-3">
+              {participants.map((p) => (
+                <div
+                  key={p.id}
+                  className="flex items-center justify-between rounded-lg bg-slate-900/50 px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-slate-200">
+                      {p.user?.name || "User"}
+                      {p.userId === user?.id && (
+                        <span className="ml-1 text-xs text-slate-500">(You)</span>
+                      )}
+                    </p>
+                    {p.role && (
+                      <span
+                        className={`mt-0.5 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                          p.role === ROLES.SENDER
+                            ? "bg-amber-500/10 text-amber-400"
+                            : "bg-emerald-500/10 text-emerald-400"
+                        }`}
+                      >
+                        {p.role === ROLES.SENDER ? "Sender" : "Receiver"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {participants.length < 2 && (
+                <div className="rounded-lg border border-dashed border-slate-700 bg-slate-900/30 px-3 py-4 text-center">
+                  <p className="text-xs text-slate-500">Waiting for peer to join...</p>
+                  <p className="mt-1 font-mono text-sm text-slate-400">
+                    {room.roomCode}
+                  </p>
+                </div>
+              )}
+            </div>
+          </GlassCard>
+
+          {/* Deal Info */}
+          {room.amount && (
+            <GlassCard className="border border-slate-800/80 p-4">
+              <h3 className="mb-3 text-sm font-medium text-slate-200">Deal Info</h3>
+              <dl className="space-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <dt className="text-slate-400">Amount</dt>
+                  <dd className="font-medium text-slate-100">
+                    {formatAmount(room.amount)} USDT
+                  </dd>
+                </div>
+                {room.feePayer && (
+                  <div className="flex items-center justify-between">
+                    <dt className="text-slate-400">Fee Payer</dt>
+                    <dd className="capitalize text-slate-100">{room.feePayer}</dd>
+                  </div>
+                )}
+                <div className="flex items-center justify-between">
+                  <dt className="text-slate-400">Fee (1%)</dt>
+                  <dd className="text-slate-100">
+                    {formatAmount(((Number(room.amount) * 0.01)).toString())} USDT
+                  </dd>
+                </div>
+              </dl>
+            </GlassCard>
+          )}
+
+          {/* Deposit Info */}
+          {depositInfo?.escrowAddress && (
+            <GlassCard className="border border-slate-800/80 p-4">
+              <h3 className="mb-3 text-sm font-medium text-slate-200">
+                Escrow Deposit
+              </h3>
+              <div className="space-y-3">
+                <div>
+                  <p className="text-xs text-slate-400">Deposit Address</p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <code className="flex-1 truncate rounded bg-slate-900 px-2 py-1 text-xs text-slate-200">
+                      {depositInfo.escrowAddress}
+                    </code>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0"
+                      onClick={() => copyToClipboard(depositInfo.escrowAddress!)}
+                    >
+                      {copiedAddress ? (
+                        <Check className="h-3 w-3 text-emerald-400" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </Button>
+                  </div>
+                </div>
+
+                {depositInfo.expectedAmount && (
+                  <div>
+                    <p className="text-xs text-slate-400">Expected Amount</p>
+                    <p className="mt-1 text-sm font-medium text-slate-200">
+                      {formatAmount(depositInfo.expectedAmount)} USDT
+                    </p>
+                  </div>
+                )}
+
+                {depositInfo.depositTxHash && (
+                  <div>
+                    <p className="text-xs text-slate-400">Deposit Transaction</p>
+                    <a
+                      href={`${depositInfo.explorerUrl}/tx/${depositInfo.depositTxHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 flex items-center gap-1 text-xs text-accent-blue hover:underline"
+                    >
+                      {shortenAddress(depositInfo.depositTxHash)}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                )}
+
+                {room.step === ROOM_STEPS.AWAITING_DEPOSIT && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => handleAction("check-deposit")}
+                    disabled={actionLoading === "check-deposit"}
+                  >
+                    {actionLoading === "check-deposit" ? (
+                      <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="mr-2 h-3 w-3" />
+                    )}
+                    Check Deposit
+                  </Button>
+                )}
+              </div>
+            </GlassCard>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-interface EscrowStepProps {
-  label: string;
-  state: "done" | "current" | "upcoming";
-  icon: React.ReactNode;
+// ============ Sub Components ============
+
+interface MessageBubbleProps {
+  message: Message;
+  currentUserId?: string;
+  onAction: (action: string, data?: unknown) => void;
+  actionLoading: string | null;
+  amountInput: string;
+  setAmountInput: (value: string) => void;
+  addressInput: string;
+  setAddressInput: (value: string) => void;
+  currentParticipant?: Participant;
+  room: Room;
 }
 
-function EscrowStep({ label, state, icon }: EscrowStepProps) {
-  const baseCircle =
-    "flex h-7 w-7 items-center justify-center rounded-full border text-slate-200";
+function MessageBubble({
+  message,
+  currentUserId,
+  onAction,
+  actionLoading,
+  amountInput,
+  setAmountInput,
+  addressInput,
+  setAddressInput,
+  currentParticipant,
+  room,
+}: MessageBubbleProps) {
+  const isCurrentUser = message.senderId === currentUserId;
+  const isBot = message.senderType === "bot";
+  const isSystem = message.senderType === "system";
 
-  const circleClass =
-    state === "done"
-      ? "border-emerald-400/80 bg-emerald-500/20"
-      : state === "current"
-        ? "border-sky-400/80 bg-sky-500/20"
-        : "border-slate-600/60 bg-slate-900/80";
+  // Parse metadata if it's a string
+  let metadata: BotMessageMetadata | undefined;
+  if (message.metadata) {
+    if (typeof message.metadata === "string") {
+      try {
+        metadata = JSON.parse(message.metadata);
+      } catch {
+        metadata = undefined;
+      }
+    } else {
+      metadata = message.metadata;
+    }
+  }
 
-  const labelClass =
-    state === "upcoming"
-      ? "text-slate-500"
-      : "text-slate-200";
+  if (isSystem) {
+    return (
+      <div className="flex justify-center">
+        <span className="rounded-full bg-slate-800/50 px-3 py-1 text-xs text-slate-400">
+          {message.text}
+        </span>
+      </div>
+    );
+  }
 
+  if (isBot) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-[85%] space-y-2">
+          <div className="rounded-xl border border-slate-700/50 bg-slate-900/80 px-4 py-3">
+            <div className="mb-1 flex items-center gap-2">
+              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-accent-blue/20">
+                <Bot className="h-3 w-3 text-accent-blue" />
+              </div>
+              <span className="text-xs font-medium text-accent-blue">Escrow Bot</span>
+              <span className="text-xs text-slate-500">
+                {formatTimeAgo(message.createdAt)}
+              </span>
+            </div>
+            <p className="whitespace-pre-wrap text-sm text-slate-200">{message.text}</p>
+          </div>
+
+          {/* Action Buttons */}
+          {metadata?.buttons && metadata.buttons.length > 0 && (
+            <BotActionButtons
+              buttons={metadata.buttons}
+              action={metadata.action}
+              onAction={onAction}
+              actionLoading={actionLoading}
+              amountInput={amountInput}
+              setAmountInput={setAmountInput}
+              addressInput={addressInput}
+              setAddressInput={setAddressInput}
+              currentParticipant={currentParticipant}
+              room={room}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // User message
   return (
-    <li className="flex flex-col items-center gap-1 text-center">
-      <div className={`${baseCircle} ${circleClass}`}>{icon}</div>
-      <span className={labelClass}>{label}</span>
-    </li>
+    <div className={`flex ${isCurrentUser ? "justify-end" : "justify-start"}`}>
+      <div
+        className={`max-w-[75%] rounded-xl px-4 py-2 ${
+          isCurrentUser
+            ? "bg-gradient-to-br from-accent-blue to-accent-green text-slate-950"
+            : "border border-slate-700/50 bg-slate-800/50 text-slate-100"
+        }`}
+      >
+        <div className="mb-0.5 flex items-center gap-2 text-xs">
+          <span className={`font-medium ${isCurrentUser ? "text-slate-800" : "text-slate-300"}`}>
+            {isCurrentUser ? "You" : message.sender?.name || "User"}
+          </span>
+          <span className={isCurrentUser ? "text-slate-700" : "text-slate-500"}>
+            {formatTimeAgo(message.createdAt)}
+          </span>
+        </div>
+        <p className="text-sm">{message.text}</p>
+      </div>
+    </div>
   );
 }
 
+interface BotActionButtonsProps {
+  buttons: { id: string; label: string; action: string; variant: string }[];
+  action?: string;
+  onAction: (action: string, data?: unknown) => void;
+  actionLoading: string | null;
+  amountInput: string;
+  setAmountInput: (value: string) => void;
+  addressInput: string;
+  setAddressInput: (value: string) => void;
+  currentParticipant?: Participant;
+  room: Room;
+}
 
+function BotActionButtons({
+  buttons,
+  action,
+  onAction,
+  actionLoading,
+  amountInput,
+  setAmountInput,
+  addressInput,
+  setAddressInput,
+  currentParticipant,
+  room,
+}: BotActionButtonsProps) {
+  // Check if we need an input field
+  const needsAmountInput = action === "propose_amount";
+  const needsAddressInput =
+    action === "submit_payout_address" || action === "submit_refund_address";
+
+  return (
+    <div className="space-y-2 rounded-lg bg-slate-800/30 p-3">
+      {needsAmountInput && (
+        <div className="mb-2">
+          <Input
+            type="number"
+            step="0.01"
+            min="0"
+            placeholder="Enter amount in USDT"
+            value={amountInput}
+            onChange={(e) => setAmountInput(e.target.value)}
+            className="bg-slate-900/50"
+          />
+        </div>
+      )}
+
+      {needsAddressInput && (
+        <div className="mb-2">
+          <Input
+            type="text"
+            placeholder="Enter wallet address (0x...)"
+            value={addressInput}
+            onChange={(e) => setAddressInput(e.target.value)}
+            className="bg-slate-900/50 font-mono text-sm"
+          />
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        {buttons.map((button) => {
+          const isLoading = actionLoading === button.action;
+          const isDisabled =
+            isLoading ||
+            (needsAmountInput && !amountInput && button.action === "propose-amount") ||
+            (needsAddressInput &&
+              !addressInput &&
+              (button.action === "submit-payout-address" ||
+                button.action === "submit-refund-address"));
+
+          return (
+            <Button
+              key={button.id}
+              variant={button.variant === "primary" ? "default" : "outline"}
+              size="sm"
+              onClick={() => onAction(button.action)}
+              disabled={isDisabled}
+              className={
+                button.variant === "danger"
+                  ? "border-red-500/30 text-red-400 hover:bg-red-500/10"
+                  : ""
+              }
+            >
+              {isLoading && <Loader2 className="mr-2 h-3 w-3 animate-spin" />}
+              {button.label}
+            </Button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+interface ProgressStepProps {
+  step: number;
+  label: string;
+  isActive: boolean;
+  isComplete: boolean;
+}
+
+function ProgressStep({ step, label, isActive, isComplete }: ProgressStepProps) {
+  return (
+    <div className="flex items-center gap-3">
+      <div
+        className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium ${
+          isComplete
+            ? "bg-emerald-500/20 text-emerald-400"
+            : isActive
+              ? "bg-sky-500/20 text-sky-400"
+              : "bg-slate-800 text-slate-500"
+        }`}
+      >
+        {isComplete ? <Check className="h-3 w-3" /> : step}
+      </div>
+      <span
+        className={`text-xs ${
+          isComplete
+            ? "text-emerald-400"
+            : isActive
+              ? "text-sky-400"
+              : "text-slate-500"
+        }`}
+      >
+        {label}
+      </span>
+    </div>
+  );
+}

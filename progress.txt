@@ -1,0 +1,254 @@
+# Backend Refactor Progress
+# Last Updated: 2024-12-30
+# Status: ALL FEATURES COMPLETED
+
+This file tracks the progress of refactoring the backend to support the new bot-driven escrow workflow.
+
+## Completed Features
+
+### Feature 1: Database Schema Updates
+- Updated `schema.ts` with new fields for bot-driven flow
+- Added `roomCode` (6-char unique code for joining rooms)
+- Added `step` field for tracking bot flow phases
+- Added `feePayer` field (sender/receiver/split)
+- Added `escrowAddress`, `depositTxHash`, `releaseTxHash` fields
+- Added confirmation flags to participants table
+- Created `disputes` table for dispute handling
+- Created `transactions` table for public transaction history
+- Updated types/index.ts with constants (ROOM_STEPS, FEE_PAYERS, ROLES, TIMEOUTS)
+
+### Feature 2: Room Code System
+- Added room code generation using nanoid with collision retry
+- Added `generateRoomCode()` utility function
+- Added `getRoomsByUserId()` for fetching user's rooms
+- Added `GET /api/chains` endpoint for supported chains
+- Added `GET /api/rooms/my` endpoint for current user's rooms
+- Added `GET /api/rooms/code/:roomCode` endpoint
+
+### Feature 3: Bot State Machine
+- Created `bot.service.ts` with comprehensive message templates
+- Implemented state transitions between phases
+- Added helper functions for fee calculations
+- Integrated bot messaging into room flow
+
+### Feature 4: Role Selection Phase
+- Implemented role selection endpoints
+- Added conflict detection when both select same role
+- Added reset roles functionality
+- State transitions: WAITING_FOR_PEER -> ROLE_SELECTION
+
+### Feature 5: Amount Agreement Phase
+- Sender proposes amount in USDT
+- Both parties must confirm
+- Rejection resets to proposal state
+- State transitions: ROLE_SELECTION -> AMOUNT_AGREEMENT
+
+### Feature 6: Fee Configuration Phase
+- Fee payer selection (sender/receiver/split)
+- Both parties must confirm fee arrangement
+- Deal summary shown before deposit
+- State transitions: AMOUNT_AGREEMENT -> FEE_SELECTION -> AWAITING_DEPOSIT
+
+### Feature 7: Escrow Address & Deposit Detection (Mock)
+- Created `blockchain.service.ts` with mock implementations
+- Deterministic escrow address generation based on room ID
+- Mock deposit functionality for testing
+- Deposit detection and state transition to FUNDED
+- New endpoints:
+  - `GET /api/rooms/:roomId/deposit-info`
+  - `POST /api/rooms/:roomId/actions/check-deposit`
+  - `POST /api/rooms/:roomId/actions/mock-deposit` (DEV ONLY)
+
+### Feature 8: Release Flow
+- Sender initiates release (only sender can start)
+- Both parties must confirm release (double confirmation)
+- Receiver provides wallet address for payout
+- Address confirmation with warning about irreversibility
+- Execute release via blockchain service (mock)
+- State transitions: FUNDED -> RELEASING -> COMPLETED
+- New endpoints:
+  - `POST /api/rooms/:roomId/actions/initiate-release`
+  - `POST /api/rooms/:roomId/actions/confirm-release`
+  - `POST /api/rooms/:roomId/actions/cancel-release`
+  - `POST /api/rooms/:roomId/actions/submit-payout-address`
+  - `POST /api/rooms/:roomId/actions/confirm-payout-address`
+  - `POST /api/rooms/:roomId/actions/change-payout-address`
+
+### Feature 9: Cancel/Refund Flow
+- Either party initiates cancel (from FUNDED state)
+- Both parties must confirm cancellation
+- Sender provides wallet address for refund
+- Address confirmation with warning
+- Execute refund via blockchain service (mock)
+- State transitions: FUNDED -> CANCELLING -> CANCELLED
+- New endpoints:
+  - `POST /api/rooms/:roomId/actions/initiate-cancel`
+  - `POST /api/rooms/:roomId/actions/confirm-cancel`
+  - `POST /api/rooms/:roomId/actions/reject-cancel`
+  - `POST /api/rooms/:roomId/actions/submit-refund-address`
+  - `POST /api/rooms/:roomId/actions/confirm-refund-address`
+  - `POST /api/rooms/:roomId/actions/change-refund-address`
+
+### Feature 10: Timeout System
+- Created `timeout.service.ts` for timeout logic
+- 15-minute pre-funding timeout (WAITING_FOR_PEER through FEE_SELECTION)
+- 30-minute funding timeout (AWAITING_DEPOSIT)
+- Scheduler endpoints for cron job integration
+- Timeout warnings and expiration messages
+- Room status transitions to EXPIRED
+- New endpoints:
+  - `POST /api/scheduler/check-timeouts` - Check and expire timed-out rooms
+  - `POST /api/scheduler/send-warnings` - Send timeout warnings
+  - `GET /api/scheduler/config` - Get timeout configuration
+  - `GET /api/scheduler/expiring-soon` - Get rooms expiring soon
+  - `GET /api/rooms/:roomId/timeout-status` - Get room timeout status
+
+### Feature 11: Dispute System (Mock)
+- Created `dispute.repository.ts` and `dispute.service.ts`
+- Report endpoint to create disputes
+- Store explanation and proof URL
+- Dispute status tracking (PENDING → UNDER_REVIEW → RESOLVED)
+- Room status changes to DISPUTED when dispute filed
+- Bot notifications for dispute events
+- Admin endpoints for managing disputes (mock - no auth)
+- New endpoints:
+  - `POST /api/rooms/:roomId/dispute` - Create dispute
+  - `GET /api/rooms/:roomId/disputes` - Get room disputes
+  - `GET /api/disputes/my` - Get user's disputes
+  - `GET /api/disputes/:disputeId` - Get dispute by ID
+  - `GET /api/admin/disputes` - Get all disputes (admin)
+  - `GET /api/admin/disputes/stats` - Get dispute stats (admin)
+  - `PATCH /api/admin/disputes/:disputeId/status` - Update status (admin)
+  - `POST /api/admin/disputes/:disputeId/notes` - Add notes (admin)
+
+### Feature 12: Transaction History (COMPLETED)
+- Created `transaction.repository.ts` and `transaction.service.ts`
+- Public endpoint for completed transactions
+- Filter by chain, status, date range
+- Pagination support with hasMore indicator
+- Stats endpoint for aggregate statistics
+- User's own transactions endpoint
+- Transaction automatically recorded on release/refund
+- New endpoints:
+  - `GET /api/transactions` - Public history with filters
+  - `GET /api/transactions/stats` - Aggregate statistics
+  - `GET /api/transactions/my` - User's transactions (auth required)
+  - `GET /api/transactions/chain/:chainId` - Filter by chain
+  - `GET /api/transactions/:transactionId` - Single transaction
+  - `GET /api/rooms/:roomId/transaction` - Room's transaction
+
+### Feature 13: Blockchain Integration (COMPLETED)
+- Rewrote `blockchain.service.ts` with full viem integration
+- Supports both mock mode (no contract) and real mode (with deployed contract)
+- Created deal ID generation: keccak256(roomId, chainId)
+- Functions implemented:
+  - `createDeal()` - Create deal on smart contract
+  - `checkDeposit()` - Check if deal is funded
+  - `executeRelease()` - Release funds to receiver
+  - `executeRefund()` - Refund funds to sender
+  - `cancelDeal()` - Cancel unfunded deal
+  - `getDeal()` - Get deal info from contract
+- Updated `bot.service.ts` to use new blockchain API
+- Added `masterEscrow.abi.json` for contract ABI
+- Updated `chains.ts` with `masterEscrowAddress` and `rpcUrl` per chain
+- Environment variables added:
+  - `BOT_PRIVATE_KEY` - Admin wallet private key
+  - `MASTER_ESCROW_SEPOLIA` - Contract address on Sepolia
+  - `SEPOLIA_RPC_URL` - RPC URL for Sepolia
+
+## Deployment Status
+
+### Smart Contract (MasterEscrow)
+- Sepolia Testnet: `0x73ADEB9a3BDC45BEC3ca552D529FFEfee06Ed0E1`
+- Admin: `0x321b4543826be5Ec9d9cf62B7053f9b526f9C21d`
+
+## Pending Features
+
+None - All backend features completed!
+
+## API Endpoints
+
+### Room Routes
+- `GET /api/chains` - Get supported chains
+- `GET /api/rooms` - Get all rooms (auth required)
+- `GET /api/rooms/my` - Get current user's rooms (auth required)
+- `POST /api/rooms` - Create room (auth required)
+- `POST /api/rooms/join` - Join room by code (auth required)
+- `GET /api/rooms/code/:roomCode` - Get room by code (auth required)
+- `GET /api/rooms/:roomId` - Get room by ID (auth required)
+- `GET /api/rooms/:roomId/participants` - Get room participants (auth required)
+
+### Bot Action Routes
+- `GET /api/rooms/:roomId/state` - Get current room state
+- `GET /api/rooms/:roomId/deposit-info` - Get deposit information
+- `POST /api/rooms/:roomId/actions/select-role` - Select role
+- `POST /api/rooms/:roomId/actions/reset-roles` - Reset role selections
+- `POST /api/rooms/:roomId/actions/propose-amount` - Propose deal amount
+- `POST /api/rooms/:roomId/actions/confirm-amount` - Confirm/reject amount
+- `POST /api/rooms/:roomId/actions/select-fee-payer` - Select fee payer
+- `POST /api/rooms/:roomId/actions/confirm-fee` - Confirm fee arrangement
+- `POST /api/rooms/:roomId/actions/check-deposit` - Check for deposits
+- `POST /api/rooms/:roomId/actions/mock-deposit` - Mock deposit (DEV)
+- `POST /api/rooms/:roomId/actions/initiate-release` - Sender initiates release
+- `POST /api/rooms/:roomId/actions/confirm-release` - Confirm release
+- `POST /api/rooms/:roomId/actions/cancel-release` - Cancel release request
+- `POST /api/rooms/:roomId/actions/submit-payout-address` - Submit payout address
+- `POST /api/rooms/:roomId/actions/confirm-payout-address` - Confirm & execute release
+- `POST /api/rooms/:roomId/actions/change-payout-address` - Change payout address
+- `POST /api/rooms/:roomId/actions/initiate-cancel` - Initiate cancellation
+- `POST /api/rooms/:roomId/actions/confirm-cancel` - Confirm cancellation
+- `POST /api/rooms/:roomId/actions/reject-cancel` - Reject cancellation
+- `POST /api/rooms/:roomId/actions/submit-refund-address` - Submit refund address
+- `POST /api/rooms/:roomId/actions/confirm-refund-address` - Confirm & execute refund
+- `POST /api/rooms/:roomId/actions/change-refund-address` - Change refund address
+
+### Message Routes
+- `GET /api/rooms/:roomId/messages` - Get room messages
+- `POST /api/rooms/:roomId/messages` - Send message
+
+### Scheduler Routes (for cron jobs)
+- `POST /api/scheduler/check-timeouts` - Check and expire timed-out rooms
+- `POST /api/scheduler/send-warnings` - Send timeout warnings
+- `GET /api/scheduler/config` - Get timeout configuration
+- `GET /api/scheduler/expiring-soon` - Get rooms expiring soon
+- `GET /api/rooms/:roomId/timeout-status` - Get room timeout status
+
+### Dispute Routes
+- `POST /api/rooms/:roomId/dispute` - Create dispute
+- `GET /api/rooms/:roomId/disputes` - Get room disputes
+- `GET /api/disputes/my` - Get user's disputes
+- `GET /api/disputes/:disputeId` - Get dispute by ID
+
+### Admin Routes (mock - no auth in dev)
+- `GET /api/admin/disputes` - Get all disputes
+- `GET /api/admin/disputes/stats` - Get dispute statistics
+- `PATCH /api/admin/disputes/:disputeId/status` - Update dispute status
+- `POST /api/admin/disputes/:disputeId/notes` - Add admin notes
+
+### Transaction Routes
+- `GET /api/transactions` - Public transaction history (filters: chainId, status, startDate, endDate, limit, offset)
+- `GET /api/transactions/stats` - Aggregate statistics
+- `GET /api/transactions/my` - User's transactions (auth required)
+- `GET /api/transactions/chain/:chainId` - Filter by chain
+- `GET /api/transactions/:transactionId` - Single transaction
+- `GET /api/rooms/:roomId/transaction` - Room's transaction
+
+## Room Steps (Bot Flow Phases)
+1. `WAITING_FOR_PEER` - Room created, waiting for second user
+2. `ROLE_SELECTION` - Both users select sender/receiver roles
+3. `AMOUNT_AGREEMENT` - Sender proposes, both confirm amount
+4. `FEE_SELECTION` - Select fee payer, both confirm
+5. `AWAITING_DEPOSIT` - Waiting for sender to deposit USDT
+6. `FUNDED` - Deposit received, awaiting release/cancel
+7. `RELEASING` - Release in progress
+8. `CANCELLING` - Cancel/refund in progress
+9. `COMPLETED` - Transaction completed successfully
+10. `CANCELLED` - Transaction cancelled
+11. `EXPIRED` - Transaction expired due to timeout
+
+## Fee Calculation
+- Service fee: 1% of deal amount
+- Fee payer options:
+  - `sender`: Sender pays full fee (deposits amount + fee)
+  - `receiver`: Receiver pays fee (gets amount - fee)
+  - `split`: Split 50/50 (sender deposits amount + fee/2, receiver gets amount - fee/2)

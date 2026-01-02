@@ -1,0 +1,381 @@
+# MiddleChalant - Smart Contract Refactor Progress
+# Last Updated: 2024-12-30
+# Status: ALL TASKS COMPLETED
+
+================================================================================
+CURRENT VS REQUIRED ARCHITECTURE
+================================================================================
+
+CURRENT IMPLEMENTATION:
+-----------------------
+- EscrowFactory.sol deploys individual Escrow.sol contracts
+- Buyer/Seller addresses are immutable at contract creation
+- Users interact directly with smart contract:
+  - Buyer calls deposit() with token approval
+  - Buyer calls release() to send funds to seller
+  - Seller calls refund() to return funds to buyer
+- Requires users to have wallets and sign transactions
+- Trustless but requires user blockchain interaction
+
+PRD REQUIREMENT:
+----------------
+- Bot/backend controls escrow and executes all transfers
+- Users just send USDT to an address (normal transfer)
+- Bot detects incoming transfers via blockchain monitoring
+- Bot executes release/refund on behalf of users
+- Users only provide destination wallet addresses
+- More user-friendly but requires trust in the bot/platform
+
+================================================================================
+ARCHITECTURE OPTIONS
+================================================================================
+
+OPTION A: Hot Wallet System (Simplest)
+--------------------------------------
+- Backend manages a hot wallet (private key stored securely)
+- Each room gets a unique deposit address (derived or generated)
+- Bot monitors for incoming USDT transfers
+- Bot sends USDT from hot wallet to receiver/sender
+- Pros: Simple, no smart contract needed for escrow
+- Cons: Centralized custody, requires secure key management
+
+OPTION B: Admin-Controlled Smart Contract (Hybrid)
+--------------------------------------------------
+- Modified Escrow contract with admin/bot privileges
+- Bot wallet can call release/refund on behalf of users
+- Users still send to contract address
+- Contract emits events for monitoring
+- Pros: On-chain audit trail, bot controls execution
+- Cons: More complex, still needs contract deployment per deal
+
+OPTION C: Single Escrow Contract with Deal IDs (Recommended)
+------------------------------------------------------------
+- One master Escrow contract per chain
+- Deals tracked by ID within the contract
+- Users deposit to contract with deal ID reference
+- Bot/admin can release/refund specific deals
+- Pros: Gas efficient, single contract to monitor, on-chain transparency
+- Cons: More complex contract logic
+
+================================================================================
+RECOMMENDED APPROACH: OPTION C
+================================================================================
+
+Single MasterEscrow contract that handles multiple deals:
+
+contract MasterEscrow {
+    struct Deal {
+        address sender;
+        address receiver;
+        address token;
+        uint256 amount;
+        uint256 fee;
+        FeePayer feePayer;
+        DealStatus status;
+        address payoutAddress;  // Set when releasing
+        address refundAddress;  // Set when refunding
+    }
+
+    mapping(bytes32 => Deal) public deals;  // dealId => Deal
+    address public admin;  // Bot wallet
+    address public feeRecipient;
+
+    function createDeal(bytes32 dealId, ...) external onlyAdmin;
+    function deposit(bytes32 dealId) external;  // Anyone can deposit
+    function release(bytes32 dealId, address payoutAddress) external onlyAdmin;
+    function refund(bytes32 dealId, address refundAddress) external onlyAdmin;
+}
+
+================================================================================
+SMART CONTRACT TODO LIST
+================================================================================
+
+[x] Task 1: Design MasterEscrow Contract
+    - Define Deal struct with all required fields
+    - Define enums: DealStatus, FeePayer
+    - Define events for monitoring
+    - STATUS: COMPLETED
+
+[x] Task 2: Implement Core Functions
+    - createDeal(): Admin creates deal with participants and terms
+    - deposit(): Accept USDT deposit for a deal ID
+    - release(): Admin releases funds to receiver (minus fee)
+    - refund(): Admin refunds funds to sender
+    - STATUS: COMPLETED
+
+[x] Task 3: Implement Fee Logic
+    - Calculate fee based on feePayer setting
+    - SENDER: Sender deposits amount + fee, receiver gets amount
+    - RECEIVER: Sender deposits amount, receiver gets amount - fee
+    - SPLIT: Sender deposits amount + halfFee, receiver gets amount - halfFee
+    - STATUS: COMPLETED
+
+[x] Task 4: Implement Security Features
+    - ReentrancyGuard on all state-changing functions
+    - Ownable for admin-only operations
+    - Pausable for emergency stops
+    - Deal status checks (can't release unfunded deal, etc.)
+    - STATUS: COMPLETED
+
+[x] Task 5: Implement Events
+    - DealCreated(dealId, roomId, token, dealAmount, depositAmount, fee, feePayer)
+    - Deposited(dealId, depositor, amount)
+    - Released(dealId, receiver, amount, fee)
+    - Refunded(dealId, sender, amount)
+    - DealCancelled(dealId)
+    - FeeRecipientUpdated(oldRecipient, newRecipient)
+    - STATUS: COMPLETED
+
+[x] Task 6: Admin Management
+    - Ownable: transferOwnership() for admin transfer
+    - setFeeRecipient(): Update fee recipient
+    - pause/unpause(): Emergency controls
+    - STATUS: COMPLETED
+
+[x] Task 7: Deploy Scripts
+    - Created deployMasterEscrow.ts script
+    - Added npm scripts for local/sepolia/bscTestnet
+    - Added etherscan verification support
+    - STATUS: COMPLETED (ready to deploy)
+
+[x] Task 8: Backend Integration
+    - Updated blockchain.service.ts with full viem integration
+    - Implemented createDeal transaction from backend
+    - Implemented release/refund transactions from backend
+    - Dual mode: mock (no contract) and real (with deployed contract)
+    - STATUS: COMPLETED
+
+[x] Task 9: Testing
+    - 40 unit tests all passing
+    - Tests for all contract functions
+    - Tests for all fee payer scenarios
+    - Tests for edge cases (double deposit, wrong amount, etc.)
+    - STATUS: COMPLETED
+
+================================================================================
+CONTRACT INTERFACE DRAFT
+================================================================================
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface IMasterEscrow {
+    enum DealStatus {
+        CREATED,        // Deal created, awaiting deposit
+        FUNDED,         // Deposit received
+        RELEASED,       // Funds sent to receiver
+        REFUNDED,       // Funds returned to sender
+        CANCELLED       // Cancelled before deposit
+    }
+
+    enum FeePayer {
+        SENDER,         // Sender pays full fee
+        RECEIVER,       // Receiver pays full fee
+        SPLIT           // 50/50 split
+    }
+
+    struct Deal {
+        address sender;
+        address receiver;
+        address token;
+        uint256 dealAmount;     // The agreed deal amount
+        uint256 depositAmount;  // Amount sender needs to deposit (varies by feePayer)
+        uint256 fee;            // Total fee amount
+        FeePayer feePayer;
+        DealStatus status;
+        uint256 createdAt;
+        uint256 fundedAt;
+        uint256 completedAt;
+    }
+
+    // Admin functions
+    function createDeal(
+        bytes32 dealId,
+        address sender,
+        address receiver,
+        address token,
+        uint256 dealAmount,
+        FeePayer feePayer
+    ) external;
+
+    function release(bytes32 dealId, address payoutAddress) external;
+    function refund(bytes32 dealId, address refundAddress) external;
+    function cancelDeal(bytes32 dealId) external;
+
+    // Public functions
+    function deposit(bytes32 dealId) external;
+    function getDeal(bytes32 dealId) external view returns (Deal memory);
+
+    // Events
+    event DealCreated(bytes32 indexed dealId, address sender, address receiver, uint256 amount);
+    event Deposited(bytes32 indexed dealId, address depositor, uint256 amount);
+    event Released(bytes32 indexed dealId, address receiver, uint256 amount, uint256 fee);
+    event Refunded(bytes32 indexed dealId, address sender, uint256 amount);
+    event DealCancelled(bytes32 indexed dealId);
+}
+
+================================================================================
+FEE CALCULATION LOGIC
+================================================================================
+
+Given:
+- dealAmount = agreed transaction amount (e.g., 100 USDT)
+- feePercentage = 1% (100 basis points)
+- fee = dealAmount * 1% = 1 USDT
+
+SENDER pays fee:
+- depositAmount = dealAmount + fee = 101 USDT
+- receiverGets = dealAmount = 100 USDT
+- platformGets = fee = 1 USDT
+
+RECEIVER pays fee:
+- depositAmount = dealAmount = 100 USDT
+- receiverGets = dealAmount - fee = 99 USDT
+- platformGets = fee = 1 USDT
+
+SPLIT fee:
+- halfFee = fee / 2 = 0.5 USDT
+- depositAmount = dealAmount + halfFee = 100.5 USDT
+- receiverGets = dealAmount - halfFee = 99.5 USDT
+- platformGets = fee = 1 USDT
+
+================================================================================
+DEAL ID GENERATION
+================================================================================
+
+Deal ID should be deterministic and unique:
+
+dealId = keccak256(abi.encodePacked(
+    chainId,
+    roomId,      // From backend
+    sender,
+    receiver,
+    dealAmount,
+    block.timestamp
+))
+
+Or simpler: Use room ID directly as deal ID (if unique across chains)
+
+================================================================================
+SECURITY CONSIDERATIONS
+================================================================================
+
+1. Admin Key Security
+   - Use multi-sig for admin wallet in production
+   - Or use a dedicated secure key management service
+   - Consider time-locks for large transactions
+
+2. Deposit Matching
+   - Contract should verify deposit amount matches expected
+   - Handle edge case of partial deposits
+   - Handle edge case of excess deposits
+
+3. Reentrancy
+   - Use ReentrancyGuard on all token transfer functions
+   - Follow checks-effects-interactions pattern
+
+4. Token Safety
+   - Use SafeERC20 for all token operations
+   - Handle non-standard ERC20 tokens (USDT has no return value)
+
+5. Front-running
+   - Deal creation is admin-only, not front-runnable
+   - Deposits are tied to specific deal IDs
+
+================================================================================
+MIGRATION PLAN
+================================================================================
+
+Phase 1: Development
+- Implement and test MasterEscrow contract
+- Deploy to testnets
+- Update backend to use new contract
+
+Phase 2: Testing
+- End-to-end testing with testnet tokens
+- Security review
+- Bug fixes
+
+Phase 3: Mainnet Deployment
+- Deploy to ETH mainnet
+- Deploy to BSC mainnet
+- Gradual rollout with monitoring
+
+================================================================================
+DEPENDENCIES
+================================================================================
+
+- OpenZeppelin Contracts:
+  - @openzeppelin/contracts/token/ERC20/IERC20.sol
+  - @openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
+  - @openzeppelin/contracts/security/ReentrancyGuard.sol
+  - @openzeppelin/contracts/security/Pausable.sol
+  - @openzeppelin/contracts/access/Ownable.sol
+
+================================================================================
+NOTES
+================================================================================
+
+- Current Escrow.sol and EscrowFactory.sol can be kept for reference
+- New MasterEscrow.sol will be the main contract
+- Backend needs bot wallet with ETH/BNB for gas fees
+- Consider gas optimization for high-volume scenarios
+
+================================================================================
+DEPLOYMENT DETAILS
+================================================================================
+
+Sepolia Testnet Deployment:
+---------------------------
+- Contract Address: 0x73ADEB9a3BDC45BEC3ca552D529FFEfee06Ed0E1
+- Admin Address: 0x321b4543826be5Ec9d9cf62B7053f9b526f9C21d
+- Fee Recipient: 0x321b4543826be5Ec9d9cf62B7053f9b526f9C21d
+- Explorer: https://sepolia.etherscan.io/address/0x73ADEB9a3BDC45BEC3ca552D529FFEfee06Ed0E1
+
+Files Created/Modified:
+-----------------------
+1. smartcontract/contracts/MasterEscrow.sol (NEW)
+   - Main escrow contract with admin control
+   - Handles multiple deals via mapping(bytes32 => Deal)
+   - Functions: createDeal, deposit, release, refund, cancelDeal
+
+2. smartcontract/contracts/mocks/MockUSDT.sol (NEW)
+   - ERC20 mock token with 6 decimals for testing
+
+3. smartcontract/test/MasterEscrow.test.ts (NEW)
+   - 40 comprehensive unit tests
+
+4. smartcontract/scripts/deployMasterEscrow.ts (NEW)
+   - Deployment script with validation
+
+5. smartcontract/hardhat.config.ts (MODIFIED)
+   - Added hardhat-toolbox, optimizer, etherscan config
+
+6. smartcontract/tsconfig.json (NEW)
+   - TypeScript config for Hardhat
+
+7. backend-hono/src/services/blockchain.service.ts (REWRITTEN)
+   - Full viem integration for real contract calls
+   - Dual mode: mock and real blockchain
+
+8. backend-hono/src/config/chains.ts (MODIFIED)
+   - Added masterEscrowAddress and rpcUrl per chain
+
+9. backend-hono/src/contracts/masterEscrow.abi.json (NEW)
+   - Contract ABI for viem
+
+10. backend-hono/.env.example (MODIFIED)
+    - Added BOT_PRIVATE_KEY, MASTER_ESCROW_*, RPC URLs
+
+================================================================================
+NEXT STEPS FOR PRODUCTION
+================================================================================
+
+1. Deploy MasterEscrow to BSC Testnet (if needed)
+2. Conduct security audit before mainnet
+3. Deploy to ETH and BSC mainnet
+4. Set up proper key management for bot wallet (consider multi-sig)
+5. Set up event monitoring for real-time updates
+6. Configure cron jobs for timeout scheduler
+
+================================================================================
