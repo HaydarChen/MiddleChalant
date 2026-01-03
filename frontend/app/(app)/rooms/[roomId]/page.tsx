@@ -114,6 +114,7 @@ export default function RoomDetailPage() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const initialScrollDone = useRef(false);
 
   // Current user's participant data
   const currentParticipant = participants.find((p) => p.userId === user?.id);
@@ -187,9 +188,12 @@ export default function RoomDetailPage() {
     return () => clearInterval(interval);
   }, [user, room, fetchRoomData, fetchMessages]);
 
-  // Scroll to bottom on new messages
+  // Scroll to bottom only once when first loading the room
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!initialScrollDone.current && messages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+      initialScrollDone.current = true;
+    }
   }, [messages]);
 
   // ============ Actions ============
