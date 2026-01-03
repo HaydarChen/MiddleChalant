@@ -168,9 +168,17 @@ function feePayerToEnum(feePayer: string): number {
 }
 
 /**
- * Check if we're in mock mode (no contract configured)
+ * Check if we're in mock mode
+ * Mock mode is enabled if:
+ * - MOCK_MODE env var is set to "true", OR
+ * - No contract address is configured for the chain, OR
+ * - No BOT_PRIVATE_KEY is set
  */
 function isMockMode(chainId: number): boolean {
+  // Explicit mock mode flag takes priority
+  if (process.env.MOCK_MODE === "true") {
+    return true;
+  }
   const contractAddress = getMasterEscrowAddress(chainId);
   return !contractAddress || !process.env.BOT_PRIVATE_KEY;
 }

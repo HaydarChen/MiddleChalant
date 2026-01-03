@@ -180,7 +180,7 @@ const BOT_MESSAGES = {
       `• Network: **${chainName}**\n\n` +
       `**Total to Deposit: $${depositAmount} USDT**\n` +
       `Receiver will get: **$${receiverGets} USDT**\n\n` +
-      `**Escrow Address:**\n\`${escrowAddress}\``,
+      `**Escrow Address:**\n${escrowAddress}`,
     metadata: {
       action: "deal_summary",
       data: { dealAmount, fee, feePayer, depositAmount, receiverGets, escrowAddress },
@@ -191,7 +191,7 @@ const BOT_MESSAGES = {
   AWAITING_DEPOSIT: (escrowAddress: string, depositAmount: string, chainName: string) => ({
     text: `**Send Payment**\n\n` +
       `Please send exactly **$${depositAmount} USDT** to:\n\n` +
-      `\`${escrowAddress}\`\n\n` +
+      `${escrowAddress}\n\n` +
       `Network: **${chainName}**\n\n` +
       `The bot will automatically detect your payment once confirmed on the blockchain.`,
     metadata: {
@@ -204,7 +204,7 @@ const BOT_MESSAGES = {
   DEPOSIT_RECEIVED: (amount: string, txHash: string) => ({
     text: `**Payment Received!**\n\n` +
       `Amount: **$${amount} USDT**\n` +
-      `Transaction: \`${txHash}\`\n\n` +
+      `Transaction:\n${txHash}\n\n` +
       `The funds are now secured in escrow. Once the receiver delivers the goods/service, ` +
       `the sender can release the payment.`,
     metadata: {
@@ -240,7 +240,7 @@ const BOT_MESSAGES = {
   }),
 
   CONFIRM_PAYOUT_ADDRESS: (address: string) => ({
-    text: `**Confirm Wallet Address**\n\nIs this correct?\n\n\`${address}\`\n\n⚠️ Once confirmed, the funds will be sent to this address and cannot be recovered if incorrect.`,
+    text: `**Confirm Wallet Address**\n\nIs this correct?\n\n${address}\n\n⚠️ Once confirmed, the funds will be sent to this address and cannot be recovered if incorrect.`,
     metadata: {
       action: "confirm_payout_address",
       data: { address },
@@ -254,7 +254,7 @@ const BOT_MESSAGES = {
   PAYMENT_RELEASED: (receiverName: string, amount: string, txHash: string) => ({
     text: `**Payment Released!**\n\n` +
       `**$${amount} USDT** has been sent to **${receiverName}**.\n\n` +
-      `Transaction: \`${txHash}\``,
+      `Transaction:\n${txHash}`,
     metadata: { action: "payment_released", data: { amount, txHash } } as BotMessageMetadata,
   }),
 
@@ -284,7 +284,7 @@ const BOT_MESSAGES = {
   PAYMENT_REFUNDED: (senderName: string, amount: string, txHash: string) => ({
     text: `**Payment Refunded**\n\n` +
       `**$${amount} USDT** has been refunded to **${senderName}**.\n\n` +
-      `Transaction: \`${txHash}\``,
+      `Transaction:\n${txHash}`,
     metadata: { action: "payment_refunded", data: { amount, txHash } } as BotMessageMetadata,
   }),
 
@@ -1114,9 +1114,77 @@ export const botService = {
     const userName = await getUserName(userId);
     await this.sendBotMessage(room.id, `**${userName}** confirmed the release.`);
 
-    // Both confirmed (sender initiated + receiver confirmed) - ask receiver for payout address
+    // In mock mode, skip payout address and complete immediately
+    if (blockchainService.isMockMode(room.chainId)) {
+      return this.executeReleaseInMockMode(room, userId);
+    }
+
+    // Real mode - ask receiver for payout address
     const addressMsg = BOT_MESSAGES.REQUEST_PAYOUT_ADDRESS(userName);
     await this.sendBotMessage(room.id, addressMsg.text, addressMsg.metadata);
+
+    return { ok: true };
+  },
+
+  /**
+   * Execute release in mock mode (skip address confirmation)
+   */
+  async executeReleaseInMockMode(
+    room: Room,
+    receiverUserId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (!room.amount || !room.feePayer) {
+      return { ok: false, error: "Room not properly configured" };
+    }
+
+    // Calculate receiver amount
+    const fee = calculateFee(room.amount);
+    const receiverAmount = calculateReceiverAmount(room.amount, fee, room.feePayer as FeePayer);
+
+    // Execute mock release (no real address needed)
+    const result = await blockchainService.executeRelease(
+      room.id,
+      "0x0000000000000000000000000000000000000000", // Mock address
+      receiverAmount,
+      room.chainId
+    );
+
+    if (!result.success) {
+      return { ok: false, error: result.error || "Failed to execute release" };
+    }
+
+    // Store release tx hash
+    await roomService.setReleaseTxHash(room.id, result.txHash!);
+
+    // Update room status
+    await roomService.updateRoomStep(room.id, ROOM_STEPS.COMPLETED);
+    await roomService.updateRoomStatus(room.id, ROOM_STATUSES.COMPLETED);
+
+    // Send success messages
+    const receiverName = await getUserName(receiverUserId);
+    const releaseMsg = BOT_MESSAGES.PAYMENT_RELEASED(
+      receiverName,
+      formatUsdtAmount(receiverAmount),
+      result.txHash!
+    );
+    await this.sendBotMessage(room.id, releaseMsg.text, releaseMsg.metadata);
+
+    const completeMsg = BOT_MESSAGES.DEAL_COMPLETED();
+    await this.sendBotMessage(room.id, completeMsg.text, completeMsg.metadata);
+
+    // Record transaction for public history
+    const participants = await roomService.getRoomParticipants(room.id);
+    const sender = participants.find((p) => p.role === ROLES.SENDER)!;
+    const receiver = participants.find((p) => p.role === ROLES.RECEIVER)!;
+
+    await transactionService.recordTransaction({
+      room,
+      sender,
+      receiver,
+      depositTxHash: room.depositTxHash!,
+      releaseTxHash: result.txHash!,
+      status: "COMPLETED",
+    });
 
     return { ok: true };
   },
@@ -1367,7 +1435,13 @@ export const botService = {
     const allConfirmed = participants.every((p) => p.cancelConfirmed);
 
     if (allConfirmed) {
-      // Both confirmed - ask sender for refund address
+      // In mock mode, skip refund address and complete immediately
+      if (blockchainService.isMockMode(room.chainId)) {
+        const sender = participants.find((p) => p.role === ROLES.SENDER)!;
+        return this.executeRefundInMockMode(room, sender.userId);
+      }
+
+      // Real mode - ask sender for refund address
       const sender = participants.find((p) => p.role === ROLES.SENDER)!;
       const senderName = await getUserName(sender.userId);
 
@@ -1377,6 +1451,69 @@ export const botService = {
       // Just send confirmation message
       await this.sendBotMessage(room.id, `**${userName}** confirmed the cancellation.`);
     }
+
+    return { ok: true };
+  },
+
+  /**
+   * Execute refund in mock mode (skip address confirmation)
+   */
+  async executeRefundInMockMode(
+    room: Room,
+    senderUserId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (!room.amount || !room.feePayer) {
+      return { ok: false, error: "Room not properly configured" };
+    }
+
+    // Calculate refund amount (deposit amount)
+    const fee = calculateFee(room.amount);
+    const depositAmount = calculateDepositAmount(room.amount, fee, room.feePayer as FeePayer);
+
+    // Execute mock refund (no real address needed)
+    const result = await blockchainService.executeRefund(
+      room.id,
+      "0x0000000000000000000000000000000000000000", // Mock address
+      depositAmount,
+      room.chainId
+    );
+
+    if (!result.success) {
+      return { ok: false, error: result.error || "Failed to execute refund" };
+    }
+
+    // Store release tx hash (same field for refund)
+    await roomService.setReleaseTxHash(room.id, result.txHash!);
+
+    // Update room status
+    await roomService.updateRoomStep(room.id, ROOM_STEPS.CANCELLED);
+    await roomService.updateRoomStatus(room.id, ROOM_STATUSES.CANCELLED);
+
+    // Send success messages
+    const senderName = await getUserName(senderUserId);
+    const refundMsg = BOT_MESSAGES.PAYMENT_REFUNDED(
+      senderName,
+      formatUsdtAmount(depositAmount),
+      result.txHash!
+    );
+    await this.sendBotMessage(room.id, refundMsg.text, refundMsg.metadata);
+
+    const cancelMsg = BOT_MESSAGES.DEAL_CANCELLED();
+    await this.sendBotMessage(room.id, cancelMsg.text, cancelMsg.metadata);
+
+    // Record transaction for public history
+    const participants = await roomService.getRoomParticipants(room.id);
+    const sender = participants.find((p) => p.role === ROLES.SENDER)!;
+    const receiver = participants.find((p) => p.role === ROLES.RECEIVER)!;
+
+    await transactionService.recordTransaction({
+      room,
+      sender,
+      receiver,
+      depositTxHash: room.depositTxHash!,
+      releaseTxHash: result.txHash!,
+      status: "REFUNDED",
+    });
 
     return { ok: true };
   },
