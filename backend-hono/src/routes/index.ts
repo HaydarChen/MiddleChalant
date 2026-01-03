@@ -133,6 +133,11 @@ apiRouter.post("/rooms/:roomId/actions/submit-refund-address", requireAuth, zVal
 apiRouter.post("/rooms/:roomId/actions/confirm-refund-address", requireAuth, botController.confirmRefundAddress);
 apiRouter.post("/rooms/:roomId/actions/change-refund-address", requireAuth, botController.changeRefundAddress);
 
+// Close Room Flow Routes (before deposit)
+apiRouter.post("/rooms/:roomId/actions/initiate-close", requireAuth, botController.initiateClose);
+apiRouter.post("/rooms/:roomId/actions/confirm-close", requireAuth, botController.confirmClose);
+apiRouter.post("/rooms/:roomId/actions/reject-close", requireAuth, botController.rejectClose);
+
 // ============ Escrow Routes ============
 
 apiRouter.get("/escrows/by-address", escrowController.getByAddress);

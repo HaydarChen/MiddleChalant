@@ -231,7 +231,12 @@ const BOT_MESSAGES = {
 
   REQUEST_PAYOUT_ADDRESS: (receiverName: string) => ({
     text: `**${receiverName}**, please provide your wallet address to receive the payment.`,
-    metadata: { action: "request_payout_address" } as BotMessageMetadata,
+    metadata: {
+      action: "request_payout_address",
+      buttons: [
+        { id: "submit_payout_address", label: "Submit Address", action: "submit_payout_address", variant: "primary" as const },
+      ],
+    } as BotMessageMetadata,
   }),
 
   CONFIRM_PAYOUT_ADDRESS: (address: string) => ({
@@ -268,7 +273,12 @@ const BOT_MESSAGES = {
 
   REQUEST_REFUND_ADDRESS: (senderName: string) => ({
     text: `**${senderName}**, please provide your wallet address for the refund.`,
-    metadata: { action: "request_refund_address" } as BotMessageMetadata,
+    metadata: {
+      action: "request_refund_address",
+      buttons: [
+        { id: "submit_refund_address", label: "Submit Address", action: "submit_refund_address", variant: "primary" as const },
+      ],
+    } as BotMessageMetadata,
   }),
 
   PAYMENT_REFUNDED: (senderName: string, amount: string, txHash: string) => ({
@@ -290,6 +300,29 @@ const BOT_MESSAGES = {
     text: `**Deal Cancelled**\n\n` +
       `The deal has been cancelled and funds have been refunded. This room will be archived.`,
     metadata: { action: "deal_cancelled" } as BotMessageMetadata,
+  }),
+
+  // Close room (before deposit)
+  CLOSE_ROOM_REQUESTED: (userName: string) => ({
+    text: `**${userName}** wants to close this room.\n\nBoth parties must confirm to close the room.`,
+    metadata: {
+      action: "close_room_requested",
+      buttons: [
+        { id: "confirm_close_room", label: "Confirm Close", action: "confirm_close_room", variant: "danger" as const },
+        { id: "reject_close_room", label: "Cancel", action: "reject_close_room", variant: "secondary" as const },
+      ],
+    } as BotMessageMetadata,
+  }),
+
+  CLOSE_ROOM_CONFIRMED_BY: (userName: string) => ({
+    text: `**${userName}** confirmed closing the room.`,
+    metadata: { action: "close_room_confirmed_by" } as BotMessageMetadata,
+  }),
+
+  ROOM_CLOSED: () => ({
+    text: `**Room Closed**\n\n` +
+      `This room has been closed by mutual agreement. No funds were deposited.`,
+    metadata: { action: "room_closed" } as BotMessageMetadata,
   }),
 
   // Timeout messages
@@ -1070,40 +1103,44 @@ export const botService = {
       return { ok: false, error: "Room is not in releasing state" };
     }
 
-    // Mark participant as confirmed
+    // Only receiver can confirm release (sender already confirmed by initiating)
+    if (participant.role !== ROLES.RECEIVER) {
+      return { ok: false, error: "Only the receiver can confirm the release" };
+    }
+
+    // Mark receiver as confirmed
     await participantRepository.update(participant.id, { releaseConfirmed: true });
 
     const userName = await getUserName(userId);
+    await this.sendBotMessage(room.id, `**${userName}** confirmed the release.`);
 
-    // Check if both confirmed
-    const participants = await roomService.getRoomParticipants(room.id);
-    const allConfirmed = participants.every((p) => p.releaseConfirmed);
-
-    if (allConfirmed) {
-      // Both confirmed - ask receiver for payout address
-      const receiver = participants.find((p) => p.role === ROLES.RECEIVER)!;
-      const receiverName = await getUserName(receiver.userId);
-
-      const addressMsg = BOT_MESSAGES.REQUEST_PAYOUT_ADDRESS(receiverName);
-      await this.sendBotMessage(room.id, addressMsg.text, addressMsg.metadata);
-    } else {
-      // Just send confirmation message
-      const confirmMsg = BOT_MESSAGES.FEE_CONFIRMED_BY(userName); // Reusing this message
-      await this.sendBotMessage(room.id, `**${userName}** confirmed the release.`);
-    }
+    // Both confirmed (sender initiated + receiver confirmed) - ask receiver for payout address
+    const addressMsg = BOT_MESSAGES.REQUEST_PAYOUT_ADDRESS(userName);
+    await this.sendBotMessage(room.id, addressMsg.text, addressMsg.metadata);
 
     return { ok: true };
   },
 
   /**
    * Cancel release request (go back to FUNDED)
+   * Only receiver can reject the sender's release request
    */
   async onReleaseCancelled(
     room: Room,
     userId: string
   ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
     if (room.step !== ROOM_STEPS.RELEASING) {
       return { ok: false, error: "Room is not in releasing state" };
+    }
+
+    // Only receiver can reject the release request
+    if (participant.role !== ROLES.RECEIVER) {
+      return { ok: false, error: "Only the receiver can reject the release request" };
     }
 
     // Reset release confirmations
@@ -1118,7 +1155,7 @@ export const botService = {
     const userName = await getUserName(userId);
     await this.sendBotMessage(
       room.id,
-      `**${userName}** cancelled the release request. The funds remain in escrow.`
+      `**${userName}** rejected the release request. The funds remain in escrow.`
     );
 
     // Re-show the release/cancel buttons
@@ -1520,5 +1557,114 @@ export const botService = {
     await this.sendBotMessage(room.id, addressMsg.text, addressMsg.metadata);
 
     return { ok: true };
+  },
+
+  // ============ Close Room Flow (before deposit) ============
+
+  /**
+   * Initiate close room (only allowed before deposit phase)
+   */
+  async onCloseRoomInitiated(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    // Only allow closing before deposit phase
+    const allowedSteps: RoomStep[] = [
+      ROOM_STEPS.WAITING_FOR_PEER,
+      ROOM_STEPS.ROLE_SELECTION,
+      ROOM_STEPS.AMOUNT_AGREEMENT,
+      ROOM_STEPS.FEE_SELECTION,
+      ROOM_STEPS.AWAITING_DEPOSIT,
+    ];
+
+    if (!allowedSteps.includes(room.step as RoomStep)) {
+      return { ok: false, error: "Room cannot be closed after funds have been deposited. Use cancel instead." };
+    }
+
+    // Mark initiator as confirmed for close
+    await participantRepository.update(participant.id, { closeRoomConfirmed: true });
+
+    const userName = await getUserName(userId);
+    const msg = BOT_MESSAGES.CLOSE_ROOM_REQUESTED(userName);
+    await this.sendBotMessage(room.id, msg.text, msg.metadata);
+
+    // Check if this is a single-user room (waiting for peer)
+    const participants = await roomService.getRoomParticipants(room.id);
+    if (participants.length === 1) {
+      // Only one user, can close immediately
+      await this.executeCloseRoom(room.id);
+    }
+
+    return { ok: true };
+  },
+
+  /**
+   * Confirm close room request
+   */
+  async onCloseRoomConfirmed(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    // Mark participant as confirmed
+    await participantRepository.update(participant.id, { closeRoomConfirmed: true });
+
+    const userName = await getUserName(userId);
+    const confirmMsg = BOT_MESSAGES.CLOSE_ROOM_CONFIRMED_BY(userName);
+    await this.sendBotMessage(room.id, confirmMsg.text, confirmMsg.metadata);
+
+    // Check if both confirmed
+    const participants = await roomService.getRoomParticipants(room.id);
+    const allConfirmed = participants.every((p) => p.closeRoomConfirmed);
+
+    if (allConfirmed) {
+      await this.executeCloseRoom(room.id);
+    }
+
+    return { ok: true };
+  },
+
+  /**
+   * Reject close room request
+   */
+  async onCloseRoomRejected(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    // Reset close confirmations
+    const participants = await roomService.getRoomParticipants(room.id);
+    for (const p of participants) {
+      await participantRepository.update(p.id, { closeRoomConfirmed: false });
+    }
+
+    const userName = await getUserName(userId);
+    await this.sendBotMessage(
+      room.id,
+      `**${userName}** cancelled the close request. The room remains open.`
+    );
+
+    return { ok: true };
+  },
+
+  /**
+   * Execute the room close (after both confirm or single user)
+   */
+  async executeCloseRoom(roomId: string): Promise<void> {
+    // Send room closed message
+    const closeMsg = BOT_MESSAGES.ROOM_CLOSED();
+    await this.sendBotMessage(roomId, closeMsg.text, closeMsg.metadata);
+
+    // Update room status
+    await roomService.updateRoomStep(roomId, ROOM_STEPS.CANCELLED);
+    await roomService.updateRoomStatus(roomId, ROOM_STATUSES.CANCELLED);
   },
 };

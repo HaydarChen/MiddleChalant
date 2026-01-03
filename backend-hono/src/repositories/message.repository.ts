@@ -11,20 +11,24 @@ export const messageRepository = {
     const { limit = 30, cursor } = options;
 
     if (cursor) {
-      return db
-        .select()
-        .from(messages)
-        .where(and(eq(messages.roomId, roomId), lt(messages.id, cursor)))
-        .orderBy(desc(messages.createdAt))
-        .limit(limit);
+      return db.query.messages.findMany({
+        where: and(eq(messages.roomId, roomId), lt(messages.id, cursor)),
+        orderBy: [desc(messages.createdAt)],
+        limit,
+        with: {
+          sender: true,
+        },
+      });
     }
 
-    return db
-      .select()
-      .from(messages)
-      .where(eq(messages.roomId, roomId))
-      .orderBy(desc(messages.createdAt))
-      .limit(limit);
+    return db.query.messages.findMany({
+      where: eq(messages.roomId, roomId),
+      orderBy: [desc(messages.createdAt)],
+      limit,
+      with: {
+        sender: true,
+      },
+    });
   },
 
   async findById(id: string): Promise<Message | null> {

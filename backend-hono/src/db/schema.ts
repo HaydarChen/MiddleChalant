@@ -110,6 +110,7 @@ export const participants = pgTable("participants", {
   feeConfirmed: boolean("fee_confirmed").notNull().default(false),
   releaseConfirmed: boolean("release_confirmed").notNull().default(false), // For double confirmation
   cancelConfirmed: boolean("cancel_confirmed").notNull().default(false),
+  closeRoomConfirmed: boolean("close_room_confirmed").notNull().default(false), // For close room confirmation
   payoutAddress: text("payout_address"), // Wallet address for receiving funds
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

@@ -603,4 +603,78 @@ export const botController = {
 
     return c.json({ ok: true });
   },
+
+  // ============ Close Room Flow (before deposit) ============
+
+  /**
+   * POST /rooms/:roomId/actions/initiate-close
+   * Either party initiates closing the room (before deposit)
+   */
+  async initiateClose(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onCloseRoomInitiated(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/confirm-close
+   * Confirm closing the room
+   */
+  async confirmClose(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onCloseRoomConfirmed(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
+   * POST /rooms/:roomId/actions/reject-close
+   * Reject the close room request
+   */
+  async rejectClose(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onCloseRoomRejected(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
 };
