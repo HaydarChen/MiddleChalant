@@ -137,6 +137,24 @@ const BOT_MESSAGES = {
     metadata: { action: "fee_payer_selected", data: { feePayer } } as BotMessageMetadata,
   }),
 
+  // Fee confirmation - ask both users to confirm
+  FEE_PENDING_CONFIRMATION: (feePayer: string, amount: string, fee: string, depositAmount: string, receiverGets: string) => ({
+    text: `**Fee Summary**\n\n` +
+      `• Fee Option: **${formatFeePayer(feePayer)}**\n` +
+      `• Deal Amount: **$${amount} USDT**\n` +
+      `• Fee (${FEE_PERCENTAGE}%): **$${fee} USDT**\n\n` +
+      `Sender will deposit: **$${depositAmount} USDT**\n` +
+      `Receiver will get: **$${receiverGets} USDT**\n\n` +
+      `Both parties must confirm this fee arrangement.`,
+    metadata: {
+      action: "fee_pending_confirmation",
+      buttons: [
+        { id: "confirm_fee", label: "Confirm Fee", action: "confirm_fee", variant: "primary" as const },
+        { id: "change_fee", label: "Change Fee", action: "change_fee", variant: "secondary" as const },
+      ],
+    } as BotMessageMetadata,
+  }),
+
   FEE_CONFIRMED_BY: (userName: string) => ({
     text: `**${userName}** confirmed the fee arrangement.`,
     metadata: { action: "fee_confirmed_by" } as BotMessageMetadata,
@@ -151,7 +169,8 @@ const BOT_MESSAGES = {
     feePayer: string,
     depositAmount: string,
     receiverGets: string,
-    chainName: string
+    chainName: string,
+    escrowAddress: string
   ) => ({
     text: `**Deal Summary**\n\n` +
       `• Sender: **${senderName}**\n` +
@@ -159,11 +178,12 @@ const BOT_MESSAGES = {
       `• Deal Amount: **$${dealAmount} USDT**\n` +
       `• Fee (${FEE_PERCENTAGE}%): **$${fee} USDT** (${formatFeePayer(feePayer)})\n` +
       `• Network: **${chainName}**\n\n` +
-      `Sender will deposit: **$${depositAmount} USDT**\n` +
-      `Receiver will get: **$${receiverGets} USDT**`,
+      `**Total to Deposit: $${depositAmount} USDT**\n` +
+      `Receiver will get: **$${receiverGets} USDT**\n\n` +
+      `**Escrow Address:**\n\`${escrowAddress}\``,
     metadata: {
       action: "deal_summary",
-      data: { dealAmount, fee, feePayer, depositAmount, receiverGets },
+      data: { dealAmount, fee, feePayer, depositAmount, receiverGets, escrowAddress },
     } as BotMessageMetadata,
   }),
 
@@ -656,27 +676,67 @@ export const botService = {
       return { ok: false, error: "Not in fee selection phase" };
     }
 
+    if (!room.amount) {
+      return { ok: false, error: "Amount not set" };
+    }
+
     // Store fee payer
     await roomService.setFeePayer(room.id, feePayer);
 
-    // Reset fee confirmations
+    // Reset fee confirmations (don't auto-confirm - require explicit confirmation)
     const participants = await roomService.getRoomParticipants(room.id);
     for (const p of participants) {
       await participantRepository.update(p.id, { feeConfirmed: false });
     }
 
-    // Auto-confirm for the user who selected
-    await participantRepository.update(participant.id, { feeConfirmed: true });
-
     const userName = await getUserName(userId);
     const selectedMsg = BOT_MESSAGES.FEE_PAYER_SELECTED(userName, feePayer);
     await this.sendBotMessage(room.id, selectedMsg.text, selectedMsg.metadata);
 
-    const confirmMsg = BOT_MESSAGES.FEE_CONFIRMED_BY(userName);
+    // Calculate amounts for confirmation message
+    const fee = calculateFee(room.amount);
+    const depositAmount = calculateDepositAmount(room.amount, fee, feePayer);
+    const receiverGets = calculateReceiverAmount(room.amount, fee, feePayer);
+
+    // Show confirmation message
+    const confirmMsg = BOT_MESSAGES.FEE_PENDING_CONFIRMATION(
+      feePayer,
+      formatUsdtAmount(room.amount),
+      formatUsdtAmount(fee),
+      formatUsdtAmount(depositAmount),
+      formatUsdtAmount(receiverGets)
+    );
     await this.sendBotMessage(room.id, confirmMsg.text, confirmMsg.metadata);
 
-    // Check if other user already confirmed (if fee payer was changed)
-    await this.checkFeeConfirmations(room.id);
+    return { ok: true };
+  },
+
+  /**
+   * Handle fee change request (go back to fee selection)
+   */
+  async onFeeChangeRequested(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (room.step !== ROOM_STEPS.FEE_SELECTION) {
+      return { ok: false, error: "Not in fee selection phase" };
+    }
+
+    if (!room.amount) {
+      return { ok: false, error: "Amount not set" };
+    }
+
+    // Reset fee payer and confirmations
+    await roomService.setFeePayer(room.id, null as any);
+    const participants = await roomService.getRoomParticipants(room.id);
+    for (const p of participants) {
+      await participantRepository.update(p.id, { feeConfirmed: false });
+    }
+
+    // Show fee selection again
+    const fee = calculateFee(room.amount);
+    const feeMsg = BOT_MESSAGES.FEE_SELECTION(formatUsdtAmount(room.amount), formatUsdtAmount(fee));
+    await this.sendBotMessage(room.id, feeMsg.text, feeMsg.metadata);
 
     return { ok: true };
   },
@@ -723,6 +783,10 @@ export const botService = {
     const allConfirmed = participants.every((p) => p.feeConfirmed);
 
     if (allConfirmed && room.amount && room.feePayer) {
+      // Get escrow contract address first (needed for deal summary)
+      const escrowAddress = blockchainService.getEscrowAddress(room.chainId);
+      await roomService.setEscrowAddress(roomId, escrowAddress);
+
       // Show deal summary
       const sender = participants.find((p) => p.role === ROLES.SENDER)!;
       const receiver = participants.find((p) => p.role === ROLES.RECEIVER)!;
@@ -745,16 +809,13 @@ export const botService = {
         room.feePayer,
         formatUsdtAmount(depositAmount),
         formatUsdtAmount(receiverGets),
-        chainName
+        chainName,
+        escrowAddress
       );
       await this.sendBotMessage(roomId, summaryMsg.text, summaryMsg.metadata);
 
       // Proceed to awaiting deposit
       await roomService.updateRoomStep(roomId, ROOM_STEPS.AWAITING_DEPOSIT);
-
-      // Get escrow contract address and create deal on blockchain
-      const escrowAddress = blockchainService.getEscrowAddress(room.chainId);
-      await roomService.setEscrowAddress(roomId, escrowAddress);
 
       // Create deal on smart contract (if not in mock mode)
       const createResult = await blockchainService.createDeal(

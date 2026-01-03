@@ -113,6 +113,7 @@ apiRouter.post("/rooms/:roomId/actions/propose-amount", requireAuth, zValidator(
 apiRouter.post("/rooms/:roomId/actions/confirm-amount", requireAuth, zValidator("json", confirmAmountSchema), botController.confirmAmount);
 apiRouter.post("/rooms/:roomId/actions/select-fee-payer", requireAuth, zValidator("json", selectFeePayerSchema), botController.selectFeePayer);
 apiRouter.post("/rooms/:roomId/actions/confirm-fee", requireAuth, botController.confirmFee);
+apiRouter.post("/rooms/:roomId/actions/change-fee", requireAuth, botController.changeFee);
 apiRouter.post("/rooms/:roomId/actions/check-deposit", requireAuth, botController.checkDeposit);
 apiRouter.post("/rooms/:roomId/actions/mock-deposit", requireAuth, botController.mockDeposit);
 

@@ -194,6 +194,30 @@ export const botController = {
   },
 
   /**
+   * POST /rooms/:roomId/actions/change-fee
+   * Request to change fee selection (go back to fee selection)
+   */
+  async changeFee(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onFeeChangeRequested(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
    * GET /rooms/:roomId/state
    * Get current room state (for reconnecting clients)
    */
