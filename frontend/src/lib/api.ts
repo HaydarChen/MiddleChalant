@@ -208,6 +208,12 @@ export const botActionsApi = {
     });
   },
 
+  async confirmRoles(roomId: string): Promise<{ ok: boolean }> {
+    return apiFetch(`/api/rooms/${roomId}/actions/confirm-roles`, {
+      method: "POST",
+    });
+  },
+
   // Amount Agreement
   async proposeAmount(roomId: string, amount: string): Promise<{ ok: boolean }> {
     return apiFetch(`/api/rooms/${roomId}/actions/propose-amount`, {

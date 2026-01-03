@@ -209,92 +209,108 @@ export default function RoomDetailPage() {
     }
   };
 
-  const handleAction = async (action: string, data?: unknown) => {
-    setActionLoading(action);
+  const handleAction = async (buttonId: string, data?: unknown) => {
+    setActionLoading(buttonId);
     try {
-      switch (action) {
-        case "select-role-sender":
+      switch (buttonId) {
+        // Role selection (button IDs from backend)
+        case "select_sender":
           await botActionsApi.selectRole(roomId, ROLES.SENDER);
           break;
-        case "select-role-receiver":
+        case "select_receiver":
           await botActionsApi.selectRole(roomId, ROLES.RECEIVER);
           break;
-        case "reset-roles":
+        case "confirm_roles":
+          await botActionsApi.confirmRoles(roomId);
+          break;
+        case "reset_roles":
           await botActionsApi.resetRoles(roomId);
           break;
-        case "propose-amount":
+        // Amount agreement
+        case "submit_amount":
           if (amountInput) {
-            const amountInMinor = (parseFloat(amountInput) * 1e6).toString();
-            await botActionsApi.proposeAmount(roomId, amountInMinor);
+            await botActionsApi.proposeAmount(roomId, amountInput);
             setAmountInput("");
           }
           break;
-        case "confirm-amount":
+        case "confirm_amount":
           await botActionsApi.confirmAmount(roomId, true);
           break;
-        case "reject-amount":
+        case "reject_amount":
           await botActionsApi.confirmAmount(roomId, false);
           break;
-        case "select-fee-sender":
+        // Fee selection
+        case "fee_sender":
           await botActionsApi.selectFeePayer(roomId, FEE_PAYERS.SENDER);
           break;
-        case "select-fee-receiver":
+        case "fee_receiver":
           await botActionsApi.selectFeePayer(roomId, FEE_PAYERS.RECEIVER);
           break;
-        case "select-fee-split":
+        case "fee_split":
           await botActionsApi.selectFeePayer(roomId, FEE_PAYERS.SPLIT);
           break;
-        case "confirm-fee":
+        case "confirm_fee":
           await botActionsApi.confirmFee(roomId);
           break;
+        // Deposit
         case "check-deposit":
           await botActionsApi.checkDeposit(roomId);
           break;
         case "mock-deposit":
           await botActionsApi.mockDeposit(roomId);
           break;
-        case "initiate-release":
+        // Release flow
+        case "release":
           await botActionsApi.initiateRelease(roomId);
           break;
-        case "confirm-release":
+        case "confirm_release":
           await botActionsApi.confirmRelease(roomId);
           break;
-        case "cancel-release":
+        case "cancel_release":
           await botActionsApi.cancelRelease(roomId);
           break;
-        case "submit-payout-address":
+        case "confirm_address":
+          await botActionsApi.confirmPayoutAddress(roomId);
+          break;
+        case "change_address":
+          await botActionsApi.changePayoutAddress(roomId);
+          break;
+        case "submit-payout-address": // For input submit
           if (addressInput) {
             await botActionsApi.submitPayoutAddress(roomId, addressInput);
             setAddressInput("");
           }
           break;
-        case "confirm-payout-address":
+        case "confirm_payout":
           await botActionsApi.confirmPayoutAddress(roomId);
           break;
-        case "change-payout-address":
+        case "change_payout":
           await botActionsApi.changePayoutAddress(roomId);
           break;
-        case "initiate-cancel":
+        // Cancel flow
+        case "cancel":
           await botActionsApi.initiateCancel(roomId);
           break;
-        case "confirm-cancel":
+        case "confirm_cancel":
           await botActionsApi.confirmCancel(roomId);
           break;
-        case "reject-cancel":
+        case "reject_cancel":
           await botActionsApi.rejectCancel(roomId);
           break;
-        case "submit-refund-address":
+        case "submit-refund-address": // For input submit
           if (addressInput) {
             await botActionsApi.submitRefundAddress(roomId, addressInput);
             setAddressInput("");
           }
           break;
-        case "confirm-refund-address":
+        case "confirm_refund":
           await botActionsApi.confirmRefundAddress(roomId);
           break;
-        case "change-refund-address":
+        case "change_refund":
           await botActionsApi.changeRefundAddress(roomId);
           break;
+        default:
+          console.warn("Unknown action:", buttonId);
       }
 
       await Promise.all([fetchRoomData(), fetchMessages()]);
@@ -703,6 +719,21 @@ export default function RoomDetailPage() {
 
 // ============ Sub Components ============
 
+// Simple markdown renderer for **bold** text
+function renderMarkdownText(text: string): React.ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={index} className="font-semibold">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return part;
+  });
+}
+
 interface MessageBubbleProps {
   message: Message;
   currentUserId?: string;
@@ -750,7 +781,7 @@ function MessageBubble({
     return (
       <div className="flex justify-center">
         <span className="rounded-full bg-slate-800/50 px-3 py-1 text-xs text-slate-400">
-          {message.text}
+          {renderMarkdownText(message.text)}
         </span>
       </div>
     );
@@ -770,7 +801,7 @@ function MessageBubble({
                 {formatTimeAgo(message.createdAt)}
               </span>
             </div>
-            <p className="whitespace-pre-wrap text-sm text-slate-200">{message.text}</p>
+            <p className="whitespace-pre-wrap text-sm text-slate-200">{renderMarkdownText(message.text)}</p>
           </div>
 
           {/* Action Buttons */}
@@ -877,21 +908,15 @@ function BotActionButtons({
 
       <div className="flex flex-wrap gap-2">
         {buttons.map((button) => {
-          const isLoading = actionLoading === button.action;
-          const isDisabled =
-            isLoading ||
-            (needsAmountInput && !amountInput && button.action === "propose-amount") ||
-            (needsAddressInput &&
-              !addressInput &&
-              (button.action === "submit-payout-address" ||
-                button.action === "submit-refund-address"));
+          const isLoading = actionLoading === button.id;
+          const isDisabled = isLoading;
 
           return (
             <Button
               key={button.id}
               variant={button.variant === "primary" ? "default" : "outline"}
               size="sm"
-              onClick={() => onAction(button.action)}
+              onClick={() => onAction(button.id)}
               disabled={isDisabled}
               className={
                 button.variant === "danger"
