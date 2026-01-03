@@ -856,7 +856,7 @@ function MessageBubble({
                 {formatTimeAgo(message.createdAt)}
               </span>
             </div>
-            <p className="whitespace-pre-wrap text-sm text-slate-200">{renderMarkdownText(message.text)}</p>
+            <p className="whitespace-pre-wrap break-all text-sm text-slate-200">{renderMarkdownText(message.text)}</p>
           </div>
 
           {/* Action Buttons */}
