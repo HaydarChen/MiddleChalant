@@ -108,6 +108,7 @@ apiRouter.get("/rooms/:roomId/state", requireAuth, botController.getRoomState);
 apiRouter.get("/rooms/:roomId/deposit-info", requireAuth, botController.getDepositInfo);
 apiRouter.post("/rooms/:roomId/actions/select-role", requireAuth, zValidator("json", selectRoleSchema), botController.selectRole);
 apiRouter.post("/rooms/:roomId/actions/reset-roles", requireAuth, botController.resetRoles);
+apiRouter.post("/rooms/:roomId/actions/confirm-roles", requireAuth, botController.confirmRoles);
 apiRouter.post("/rooms/:roomId/actions/propose-amount", requireAuth, zValidator("json", proposeAmountSchema), botController.proposeAmount);
 apiRouter.post("/rooms/:roomId/actions/confirm-amount", requireAuth, zValidator("json", confirmAmountSchema), botController.confirmAmount);
 apiRouter.post("/rooms/:roomId/actions/select-fee-payer", requireAuth, zValidator("json", selectFeePayerSchema), botController.selectFeePayer);

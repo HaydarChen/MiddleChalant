@@ -3,6 +3,9 @@ import { messageService } from "./message.service";
 import { blockchainService } from "./blockchain.service";
 import { transactionService } from "./transaction.service";
 import { participantRepository } from "@/repositories";
+import { db } from "@/lib/db";
+import { user as userTable } from "@/db/schema";
+import { eq } from "drizzle-orm";
 import type { Room, Participant, BotMessageMetadata } from "@/types";
 import {
   ROOM_STEPS,
@@ -60,6 +63,23 @@ const BOT_MESSAGES = {
     } as BotMessageMetadata,
   }),
 
+  // Role confirmation - ask both users to confirm
+  ROLES_PENDING_CONFIRMATION: (senderName: string, receiverName: string) => ({
+    text: `**Role Summary**\n\n• **Sender**: ${senderName}\n• **Receiver**: ${receiverName}\n\nBoth parties must confirm these roles are correct.`,
+    metadata: {
+      action: "roles_pending_confirmation",
+      buttons: [
+        { id: "confirm_roles", label: "Confirm Roles", action: "confirm_roles", variant: "primary" as const },
+        { id: "reset_roles", label: "Change Roles", action: "reset_roles", variant: "secondary" as const },
+      ],
+    } as BotMessageMetadata,
+  }),
+
+  ROLE_CONFIRMED_BY: (userName: string) => ({
+    text: `**${userName}** confirmed the roles.`,
+    metadata: { action: "role_confirmed_by" } as BotMessageMetadata,
+  }),
+
   ROLES_CONFIRMED: (senderName: string, receiverName: string) => ({
     text: `Roles confirmed!\n\n• **Sender**: ${senderName}\n• **Receiver**: ${receiverName}\n\nProceeding to deal amount...`,
     metadata: { action: "roles_confirmed" } as BotMessageMetadata,
@@ -67,8 +87,13 @@ const BOT_MESSAGES = {
 
   // Amount agreement phase
   AMOUNT_AGREEMENT: (senderName: string) => ({
-    text: `**Deal Amount**\n\n${senderName}, please enter the deal amount in USDT.\n\nExample: \`100\` or \`50.5\``,
-    metadata: { action: "amount_agreement" } as BotMessageMetadata,
+    text: `**Deal Amount**\n\n${senderName}, please enter the deal amount in USDT.`,
+    metadata: {
+      action: "propose_amount",
+      buttons: [
+        { id: "submit_amount", label: "Submit Amount", action: "propose_amount", variant: "primary" as const },
+      ],
+    } as BotMessageMetadata,
   }),
 
   AMOUNT_PROPOSED: (amount: string, userName: string) => ({
@@ -323,9 +348,16 @@ function calculateReceiverAmount(dealAmount: string, fee: string, feePayer: FeeP
 }
 
 async function getUserName(userId: string): Promise<string> {
-  // For now, return a shortened user ID
-  // In production, fetch from user table
-  return userId.slice(0, 8) + "...";
+  try {
+    const result = await db.query.user.findFirst({
+      where: eq(userTable.id, userId),
+      columns: { name: true },
+    });
+    return result?.name || "User";
+  } catch (error) {
+    console.error("Failed to fetch user name:", error);
+    return "User";
+  }
 }
 
 // ============ Bot Service ============
@@ -385,8 +417,8 @@ export const botService = {
       return { ok: false, error: "Not in role selection phase" };
     }
 
-    // Update participant role
-    await participantRepository.update(participant.id, { role, roleConfirmed: true });
+    // Update participant role (but don't confirm yet - that's a separate step)
+    await participantRepository.update(participant.id, { role, roleConfirmed: false });
 
     const userName = await getUserName(userId);
     const msg = BOT_MESSAGES.ROLE_SELECTED(userName, role);
@@ -394,11 +426,11 @@ export const botService = {
 
     // Check if both users have selected roles
     const participants = await roomService.getRoomParticipants(room.id);
-    const confirmed = participants.filter((p) => p.roleConfirmed);
+    const withRoles = participants.filter((p) => p.role !== null);
 
-    if (confirmed.length === 2) {
+    if (withRoles.length === 2) {
       // Check for role conflict
-      const roles = confirmed.map((p) => p.role);
+      const roles = withRoles.map((p) => p.role);
       if (roles[0] === roles[1]) {
         // Conflict - both selected same role
         const conflictMsg = BOT_MESSAGES.ROLE_CONFLICT();
@@ -406,15 +438,60 @@ export const botService = {
         return { ok: true };
       }
 
-      // Roles are valid - proceed to amount agreement
-      const sender = confirmed.find((p) => p.role === ROLES.SENDER)!;
-      const receiver = confirmed.find((p) => p.role === ROLES.RECEIVER)!;
+      // Roles are valid - ask for confirmation from both users
+      const sender = withRoles.find((p) => p.role === ROLES.SENDER)!;
+      const receiver = withRoles.find((p) => p.role === ROLES.RECEIVER)!;
 
       const senderName = await getUserName(sender.userId);
       const receiverName = await getUserName(receiver.userId);
 
-      const confirmedMsg = BOT_MESSAGES.ROLES_CONFIRMED(senderName, receiverName);
-      await this.sendBotMessage(room.id, confirmedMsg.text, confirmedMsg.metadata);
+      const confirmMsg = BOT_MESSAGES.ROLES_PENDING_CONFIRMATION(senderName, receiverName);
+      await this.sendBotMessage(room.id, confirmMsg.text, confirmMsg.metadata);
+    }
+
+    return { ok: true };
+  },
+
+  /**
+   * Handle role confirmation (both users must confirm)
+   */
+  async onRolesConfirmed(
+    room: Room,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
+    const participant = await roomService.getParticipantByUserId(room.id, userId);
+    if (!participant) {
+      return { ok: false, error: "You are not a participant in this room" };
+    }
+
+    if (room.step !== ROOM_STEPS.ROLE_SELECTION) {
+      return { ok: false, error: "Not in role selection phase" };
+    }
+
+    if (!participant.role) {
+      return { ok: false, error: "You haven't selected a role yet" };
+    }
+
+    // Mark as confirmed
+    await participantRepository.update(participant.id, { roleConfirmed: true });
+
+    const userName = await getUserName(userId);
+    const confirmMsg = BOT_MESSAGES.ROLE_CONFIRMED_BY(userName);
+    await this.sendBotMessage(room.id, confirmMsg.text, confirmMsg.metadata);
+
+    // Check if both confirmed
+    const participants = await roomService.getRoomParticipants(room.id);
+    const allConfirmed = participants.every((p) => p.roleConfirmed && p.role);
+
+    if (allConfirmed) {
+      const sender = participants.find((p) => p.role === ROLES.SENDER)!;
+      const receiver = participants.find((p) => p.role === ROLES.RECEIVER)!;
+
+      const senderName = await getUserName(sender.userId);
+      const receiverName = await getUserName(receiver.userId);
+
+      const rolesConfirmedMsg = BOT_MESSAGES.ROLES_CONFIRMED(senderName, receiverName);
+      await this.sendBotMessage(room.id, rolesConfirmedMsg.text, rolesConfirmedMsg.metadata);
 
       // Advance to amount agreement
       await roomService.updateRoomStep(room.id, ROOM_STEPS.AMOUNT_AGREEMENT);
@@ -427,7 +504,7 @@ export const botService = {
   },
 
   /**
-   * Reset roles (for conflict resolution)
+   * Reset roles (for conflict resolution or changing roles)
    */
   async onResetRoles(room: Room, userId: string): Promise<{ ok: boolean; error?: string }> {
     if (room.step !== ROOM_STEPS.ROLE_SELECTION) {

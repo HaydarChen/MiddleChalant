@@ -64,7 +64,12 @@ export const roomRepository = {
 
 export const participantRepository = {
   async findByRoomId(roomId: string): Promise<Participant[]> {
-    return db.select().from(participants).where(eq(participants.roomId, roomId));
+    return db.query.participants.findMany({
+      where: eq(participants.roomId, roomId),
+      with: {
+        user: true,
+      },
+    });
   },
 
   async findByRoomAndUser(roomId: string, userId: string): Promise<Participant | null> {

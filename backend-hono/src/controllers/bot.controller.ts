@@ -62,6 +62,30 @@ export const botController = {
   },
 
   /**
+   * POST /rooms/:roomId/actions/confirm-roles
+   * Confirm role selections (both parties must confirm)
+   */
+  async confirmRoles(c: Context) {
+    const user = getUser(c)!;
+    const roomId = c.req.param("roomId");
+
+    const room = await roomService.getRoomById(roomId);
+    if (!room) {
+      throw new NotFoundError("Room not found");
+    }
+
+    const result = await botService.onRolesConfirmed(room, user.id);
+
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, 400);
+    }
+
+    await roomService.updateLastActivity(roomId);
+
+    return c.json({ ok: true });
+  },
+
+  /**
    * POST /rooms/:roomId/actions/propose-amount
    * Propose deal amount (sender only)
    */

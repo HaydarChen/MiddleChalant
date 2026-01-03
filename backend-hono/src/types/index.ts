@@ -100,6 +100,7 @@ export type NewMessage = typeof messages.$inferInsert;
 
 export type Participant = typeof participants.$inferSelect;
 export type NewParticipant = typeof participants.$inferInsert;
+export type ParticipantWithUser = Participant & { user?: User };
 
 export type Escrow = typeof escrows.$inferSelect;
 export type NewEscrow = typeof escrows.$inferInsert;
