@@ -337,6 +337,25 @@ export const botActionsApi = {
       method: "POST",
     });
   },
+
+  // Close Room Flow (before deposit)
+  async initiateClose(roomId: string): Promise<{ ok: boolean }> {
+    return apiFetch(`/api/rooms/${roomId}/actions/initiate-close`, {
+      method: "POST",
+    });
+  },
+
+  async confirmClose(roomId: string): Promise<{ ok: boolean }> {
+    return apiFetch(`/api/rooms/${roomId}/actions/confirm-close`, {
+      method: "POST",
+    });
+  },
+
+  async rejectClose(roomId: string): Promise<{ ok: boolean }> {
+    return apiFetch(`/api/rooms/${roomId}/actions/reject-close`, {
+      method: "POST",
+    });
+  },
 };
 
 // ============ Disputes API ============

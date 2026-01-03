@@ -17,6 +17,7 @@ import {
   Users,
   Bot,
   RefreshCw,
+  XCircle,
 } from "lucide-react";
 import Link from "next/link";
 import { GlassCard } from "@/components/glass-card";
@@ -272,22 +273,16 @@ export default function RoomDetailPage() {
         case "cancel_release":
           await botActionsApi.cancelRelease(roomId);
           break;
-        case "confirm_address":
-          await botActionsApi.confirmPayoutAddress(roomId);
-          break;
-        case "change_address":
-          await botActionsApi.changePayoutAddress(roomId);
-          break;
-        case "submit-payout-address": // For input submit
+        case "submit_payout_address":
           if (addressInput) {
             await botActionsApi.submitPayoutAddress(roomId, addressInput);
             setAddressInput("");
           }
           break;
-        case "confirm_payout":
+        case "confirm_address":
           await botActionsApi.confirmPayoutAddress(roomId);
           break;
-        case "change_payout":
+        case "change_address":
           await botActionsApi.changePayoutAddress(roomId);
           break;
         // Cancel flow
@@ -300,7 +295,7 @@ export default function RoomDetailPage() {
         case "reject_cancel":
           await botActionsApi.rejectCancel(roomId);
           break;
-        case "submit-refund-address": // For input submit
+        case "submit_refund_address":
           if (addressInput) {
             await botActionsApi.submitRefundAddress(roomId, addressInput);
             setAddressInput("");
@@ -311,6 +306,16 @@ export default function RoomDetailPage() {
           break;
         case "change_refund":
           await botActionsApi.changeRefundAddress(roomId);
+          break;
+        // Close room flow
+        case "close_room":
+          await botActionsApi.initiateClose(roomId);
+          break;
+        case "confirm_close_room":
+          await botActionsApi.confirmClose(roomId);
+          break;
+        case "reject_close_room":
+          await botActionsApi.rejectClose(roomId);
           break;
         default:
           console.warn("Unknown action:", buttonId);
@@ -616,6 +621,38 @@ export default function RoomDetailPage() {
             </div>
           </GlassCard>
 
+          {/* Close Room Button - Only show before deposit phase */}
+          {room.status === ROOM_STATUSES.OPEN &&
+            [
+              ROOM_STEPS.WAITING_FOR_PEER,
+              ROOM_STEPS.ROLE_SELECTION,
+              ROOM_STEPS.AMOUNT_AGREEMENT,
+              ROOM_STEPS.FEE_SELECTION,
+              ROOM_STEPS.AWAITING_DEPOSIT,
+            ].includes(room.step as any) && (
+              <GlassCard className="border border-red-500/20 bg-red-500/5 p-4">
+                <div className="text-center">
+                  <p className="text-xs text-slate-400 mb-3">
+                    Want to close this room? Both parties must confirm.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full border-red-500/30 text-red-400 hover:bg-red-500/10"
+                    onClick={() => handleAction("close_room")}
+                    disabled={actionLoading === "close_room"}
+                  >
+                    {actionLoading === "close_room" ? (
+                      <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                    ) : (
+                      <XCircle className="mr-2 h-3 w-3" />
+                    )}
+                    Close Room
+                  </Button>
+                </div>
+              </GlassCard>
+            )}
+
           {/* Deal Info */}
           {room.amount && (
             <GlassCard className="border border-slate-800/80 p-4">
@@ -675,7 +712,7 @@ export default function RoomDetailPage() {
                   <div>
                     <p className="text-xs text-slate-400">Expected Amount</p>
                     <p className="mt-1 text-sm font-medium text-slate-200">
-                      {formatAmount(depositInfo.expectedAmount)} USDT
+                      {depositInfo.expectedAmount} USDT
                     </p>
                   </div>
                 )}
@@ -696,20 +733,35 @@ export default function RoomDetailPage() {
                 )}
 
                 {room.step === ROOM_STEPS.AWAITING_DEPOSIT && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => handleAction("check-deposit")}
-                    disabled={actionLoading === "check-deposit"}
-                  >
-                    {actionLoading === "check-deposit" ? (
-                      <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-                    ) : (
-                      <RefreshCw className="mr-2 h-3 w-3" />
-                    )}
-                    Check Deposit
-                  </Button>
+                  <div className="space-y-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => handleAction("check-deposit")}
+                      disabled={actionLoading === "check-deposit"}
+                    >
+                      {actionLoading === "check-deposit" ? (
+                        <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="mr-2 h-3 w-3" />
+                      )}
+                      Check Deposit
+                    </Button>
+                    {/* Mock Deposit for testing on testnet */}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="w-full border-dashed text-xs opacity-70 hover:opacity-100"
+                      onClick={() => handleAction("mock-deposit")}
+                      disabled={actionLoading === "mock-deposit"}
+                    >
+                      {actionLoading === "mock-deposit" ? (
+                        <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                      ) : null}
+                      Simulate Deposit (Testnet)
+                    </Button>
+                  </div>
                 )}
               </div>
             </GlassCard>
@@ -878,8 +930,13 @@ function BotActionButtons({
 }: BotActionButtonsProps) {
   // Check if we need an input field
   const needsAmountInput = action === "propose_amount";
-  const needsAddressInput =
-    action === "submit_payout_address" || action === "submit_refund_address";
+  const needsPayoutAddressInput = action === "request_payout_address";
+  const needsRefundAddressInput = action === "request_refund_address";
+
+  // Only show payout address input to receiver
+  const canSubmitPayoutAddress = needsPayoutAddressInput && currentParticipant?.role === ROLES.RECEIVER;
+  // Only show refund address input to sender
+  const canSubmitRefundAddress = needsRefundAddressInput && currentParticipant?.role === ROLES.SENDER;
 
   return (
     <div className="space-y-2 rounded-lg bg-slate-800/30 p-3">
@@ -897,11 +954,23 @@ function BotActionButtons({
         </div>
       )}
 
-      {needsAddressInput && (
+      {canSubmitPayoutAddress && (
         <div className="mb-2">
           <Input
             type="text"
-            placeholder="Enter wallet address (0x...)"
+            placeholder="Enter your wallet address (0x...)"
+            value={addressInput}
+            onChange={(e) => setAddressInput(e.target.value)}
+            className="bg-slate-900/50 font-mono text-sm"
+          />
+        </div>
+      )}
+
+      {canSubmitRefundAddress && (
+        <div className="mb-2">
+          <Input
+            type="text"
+            placeholder="Enter your wallet address (0x...)"
             value={addressInput}
             onChange={(e) => setAddressInput(e.target.value)}
             className="bg-slate-900/50 font-mono text-sm"
@@ -913,6 +982,36 @@ function BotActionButtons({
         {buttons.map((button) => {
           const isLoading = actionLoading === button.id;
           const isDisabled = isLoading;
+
+          // Hide payout address buttons if not receiver
+          if (
+            (button.id === "submit_payout_address" ||
+             button.id === "confirm_address" ||
+             button.id === "change_address") &&
+            currentParticipant?.role !== ROLES.RECEIVER
+          ) {
+            return null;
+          }
+          // Hide refund address buttons if not sender
+          if (
+            (button.id === "submit_refund_address" ||
+             button.id === "confirm_refund" ||
+             button.id === "change_refund") &&
+            currentParticipant?.role !== ROLES.SENDER
+          ) {
+            return null;
+          }
+          // Hide release button if not sender (only sender can initiate release)
+          if (button.id === "release" && currentParticipant?.role !== ROLES.SENDER) {
+            return null;
+          }
+          // Hide release confirmation buttons if not receiver (receiver confirms sender's request)
+          if (
+            (button.id === "confirm_release" || button.id === "cancel_release") &&
+            currentParticipant?.role !== ROLES.RECEIVER
+          ) {
+            return null;
+          }
 
           return (
             <Button
