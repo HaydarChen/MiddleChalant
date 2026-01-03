@@ -243,6 +243,12 @@ export const botActionsApi = {
     });
   },
 
+  async changeFee(roomId: string): Promise<{ ok: boolean }> {
+    return apiFetch(`/api/rooms/${roomId}/actions/change-fee`, {
+      method: "POST",
+    });
+  },
+
   // Deposit
   async checkDeposit(roomId: string): Promise<{ ok: boolean; found: boolean; txHash?: string }> {
     return apiFetch(`/api/rooms/${roomId}/actions/check-deposit`, {

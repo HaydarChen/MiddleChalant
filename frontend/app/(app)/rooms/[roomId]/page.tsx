@@ -252,6 +252,9 @@ export default function RoomDetailPage() {
         case "confirm_fee":
           await botActionsApi.confirmFee(roomId);
           break;
+        case "change_fee":
+          await botActionsApi.changeFee(roomId);
+          break;
         // Deposit
         case "check-deposit":
           await botActionsApi.checkDeposit(roomId);
