@@ -295,7 +295,7 @@ contract MasterEscrow is ReentrancyGuard, Pausable, Ownable {
     // ============ Public Functions ============
 
     /**
-     * @notice Deposit funds for a deal
+     * @notice Deposit funds for a deal using approve + transferFrom
      * @dev Anyone can deposit, but amount must match exactly
      * @param dealId The deal to fund
      */
@@ -317,6 +317,32 @@ contract MasterEscrow is ReentrancyGuard, Pausable, Ownable {
         );
 
         emit Deposited(dealId, msg.sender, deal.depositAmount);
+    }
+
+    /**
+     * @notice Record a direct transfer deposit (admin only)
+     * @dev Use this when user sends tokens directly to the contract
+     * @param dealId The deal to fund
+     * @param depositor Address that sent the tokens (for record keeping)
+     */
+    function recordDeposit(
+        bytes32 dealId,
+        address depositor
+    ) external onlyOwner whenNotPaused {
+        Deal storage deal = deals[dealId];
+
+        if (deal.createdAt == 0) revert DealNotFound();
+        if (deal.status != DealStatus.CREATED) revert InvalidDealStatus();
+
+        // Verify contract has sufficient balance of the token
+        uint256 balance = IERC20(deal.token).balanceOf(address(this));
+        if (balance < deal.depositAmount) revert InvalidAmount();
+
+        deal.status = DealStatus.FUNDED;
+        deal.fundedAt = block.timestamp;
+        deal.depositedBy = depositor;
+
+        emit Deposited(dealId, depositor, deal.depositAmount);
     }
 
     // ============ View Functions ============

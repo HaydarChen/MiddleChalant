@@ -275,6 +275,7 @@ export const blockchainService = {
 
   /**
    * Check if a deposit has been received for a deal
+   * If deal is still CREATED but contract has balance, record the deposit
    */
   async checkDeposit(
     roomId: string,
@@ -315,6 +316,7 @@ export const blockchainService = {
         args: [dealId],
       })) as DealInfo;
 
+      // Already funded
       if (deal.status === DealStatus.FUNDED) {
         return {
           found: true,
@@ -324,10 +326,92 @@ export const blockchainService = {
         };
       }
 
+      // If deal is CREATED, check if contract has received the funds via direct transfer
+      if (deal.status === DealStatus.CREATED) {
+        const tokenAddress = getUsdtAddress(chainId) as Address;
+
+        // Check contract's USDT balance
+        const balance = await publicClient.readContract({
+          address: tokenAddress,
+          abi: [
+            {
+              name: "balanceOf",
+              type: "function",
+              stateMutability: "view",
+              inputs: [{ name: "account", type: "address" }],
+              outputs: [{ name: "", type: "uint256" }],
+            },
+          ],
+          functionName: "balanceOf",
+          args: [contractAddress],
+        }) as bigint;
+
+        // If contract has enough balance, record the deposit
+        if (balance >= BigInt(deal.depositAmount.toString())) {
+          console.log(`Direct deposit detected for room ${roomId}, recording...`);
+          const recordResult = await this.recordDeposit(roomId, chainId);
+
+          if (recordResult.success) {
+            return {
+              found: true,
+              amount: deal.depositAmount.toString(),
+              txHash: recordResult.txHash,
+              status: DealStatus.FUNDED,
+              confirmedAt: new Date(),
+            };
+          }
+        }
+      }
+
       return { found: false, status: deal.status };
     } catch (error) {
       console.error("Error checking deposit:", error);
       return { found: false };
+    }
+  },
+
+  /**
+   * Record a direct transfer deposit on the contract
+   */
+  async recordDeposit(
+    roomId: string,
+    chainId: number,
+    depositorAddress?: string
+  ): Promise<TransferResult> {
+    if (isMockMode(chainId)) {
+      return { success: false, error: "Cannot record deposit in mock mode" };
+    }
+
+    try {
+      const contractAddress = getMasterEscrowAddress(chainId) as Address;
+      const { client: walletClient, account } = getWalletClient(chainId);
+      const publicClient = getPublicClient(chainId);
+
+      const dealId = generateDealId(roomId, chainId);
+      const chain = viemChains[chainId as keyof typeof viemChains];
+
+      // Use zero address if depositor not specified (we don't always know who sent)
+      const depositor = depositorAddress || "0x0000000000000000000000000000000000000000";
+
+      const hash = await walletClient.writeContract({
+        address: contractAddress,
+        abi: masterEscrowAbi,
+        functionName: "recordDeposit",
+        args: [dealId, depositor as Address],
+        chain,
+        account,
+      });
+
+      // Wait for confirmation
+      await publicClient.waitForTransactionReceipt({ hash });
+
+      return { success: true, txHash: hash };
+    } catch (error) {
+      console.error("Error recording deposit:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
     }
   },
 

@@ -38,7 +38,7 @@ export const TESTNET_CHAINS: Record<number, ChainConfig> = {
     id: 11155111,
     name: "Sepolia Testnet",
     shortName: "Sepolia",
-    usdtAddress: "0x7169D38820dfd117C3FA1f22a697dBA58d90BA06", // Mock USDT on Sepolia
+    usdtAddress: "0xB7d8Cf702A9e2bAaA074225cF5b96B72F4a8ECF5", // Mock USDT on Sepolia
     masterEscrowAddress: process.env.MASTER_ESCROW_SEPOLIA || "",
     explorerUrl: "https://sepolia.etherscan.io",
     rpcUrl: process.env.SEPOLIA_RPC_URL || "https://rpc.sepolia.org",
